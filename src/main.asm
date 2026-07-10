@@ -65,6 +65,11 @@ section .data
     shade_far db "+"
     shade_very_far db "-"
     empty_char db "."
+    side_very_close db "%"
+    side_close db "="
+    side_mid db ":"
+    side_far db ","
+    side_very_far db "'"
 
     ceiling_char db " "
     floor_char db "."
@@ -77,6 +82,7 @@ section .data
     player_angle dq 0       ; facing east
 
     show_minimap db 0
+    ray_side db 0
 
     map:
         db "################"
@@ -103,6 +109,9 @@ section .bss
     raw_termios resb TERMIOS_SIZE
     
     view_buffer resb VIEW_BUFFER_SIZE
+
+    prev_tile_x resq 1
+    prev_tile_y resq 1
 
 section .text
 
@@ -538,6 +547,15 @@ cast_ray_for_column:
     mov r9, [rel player_y_fp]
     xor rcx, rcx
 
+    ; Store starting tile as previous tile.
+    mov rax, r8
+    sar rax, FP_SHIFT
+    mov [rel prev_tile_x], rax
+
+    mov rax, r9
+    sar rax, FP_SHIFT
+    mov [rel prev_tile_y], rax
+
 .ray_loop:
     cmp rcx, MAX_RAY_STEPS
     jge .hit_wall
@@ -551,6 +569,26 @@ cast_ray_for_column:
 
     mov rbx, r9
     sar rbx, FP_SHIFT
+    ; Detect whether the ray crossed into a new tile horizontally or vertically.
+    ; This gives us a simple side-wall shading approximation.
+    mov rdx, [rel prev_tile_x]
+    cmp rax, rdx
+    jne .x_side_hit
+
+    mov rdx, [rel prev_tile_y]
+    cmp rbx, rdx
+    jne .y_side_hit
+
+    jmp .side_done
+
+.x_side_hit:
+    mov byte [rel ray_side], 0
+    jmp .side_done
+
+.y_side_hit:
+    mov byte [rel ray_side], 1
+
+.side_done:
 
     cmp rax, 0
     jl .hit_wall
@@ -570,6 +608,9 @@ cast_ray_for_column:
 
     cmp byte [rsi], '#'
     je .hit_wall
+    ; Current tile becomes previous tile for the next ray step.
+    mov [rel prev_tile_x], rax
+    mov [rel prev_tile_y], rbx
 
     jmp .ray_loop
 
@@ -603,36 +644,80 @@ normalize_angle:
 ; returns:
 ; rsi = address of shade character
 ; ----------------------------------------
+; ----------------------------------------
+; get_wall_shade
+; rdi = ray distance
+; returns:
+; rsi = address of shade character
+; ----------------------------------------
 get_wall_shade:
+    mov al, [rel ray_side]
+    cmp al, 1
+    je .side_wall
+
+.front_wall:
     cmp rdi, 8
-    jle .very_close
+    jle .front_very_close
 
     cmp rdi, 16
-    jle .close
+    jle .front_close
 
     cmp rdi, 32
-    jle .mid
+    jle .front_mid
 
     cmp rdi, 48
-    jle .far
+    jle .front_far
 
     lea rsi, [rel shade_very_far]
     ret
 
-.very_close:
+.front_very_close:
     lea rsi, [rel shade_very_close]
     ret
 
-.close:
+.front_close:
     lea rsi, [rel shade_close]
     ret
 
-.mid:
+.front_mid:
     lea rsi, [rel shade_mid]
     ret
 
-.far:
+.front_far:
     lea rsi, [rel shade_far]
+    ret
+
+
+.side_wall:
+    cmp rdi, 8
+    jle .side_very_close
+
+    cmp rdi, 16
+    jle .side_close
+
+    cmp rdi, 32
+    jle .side_mid
+
+    cmp rdi, 48
+    jle .side_far
+
+    lea rsi, [rel side_very_far]
+    ret
+
+.side_very_close:
+    lea rsi, [rel side_very_close]
+    ret
+
+.side_close:
+    lea rsi, [rel side_close]
+    ret
+
+.side_mid:
+    lea rsi, [rel side_mid]
+    ret
+
+.side_far:
+    lea rsi, [rel side_far]
     ret
 
 ; ----------------------------------------
