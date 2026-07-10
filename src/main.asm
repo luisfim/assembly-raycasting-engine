@@ -3,10 +3,10 @@ global _start
 %define MAP_WIDTH 16
 %define MAP_HEIGHT 8
 
-%define VIEW_WIDTH 31
-%define VIEW_HEIGHT 16
-%define VIEW_CENTER 15
-%define ANGLE_COLUMN_SCALE 5
+%define VIEW_WIDTH 63
+%define VIEW_HEIGHT 24
+%define VIEW_CENTER 31
+%define ANGLE_COLUMN_SCALE 8
 %define FP_SHIFT 10
 %define MAX_RAY_STEPS 128
 
