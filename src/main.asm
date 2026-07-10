@@ -13,11 +13,14 @@ section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
 
-    title db "asm-raycaster - step 5: single ray cast", 10
+    title db "asm-raycaster - step 6: ray distance", 10
           db "W/S = move forward/backward | A/D = rotate | X = quit", 10
           db "The * shows where the ray hits a wall.", 10
           db "Press a key, then ENTER.", 10, 10
     title_len equ $ - title
+
+    distance_label db "Ray distance to wall: "
+    distance_label_len equ $ - distance_label
 
     newline db 10
 
@@ -30,6 +33,7 @@ section .data
 
     ray_hit_x dq 0
     ray_hit_y dq 0
+    ray_dist dq 0
 
     map:
         db "################"
@@ -43,6 +47,7 @@ section .data
 
 section .bss
     input_buf resb 8
+    number_buf resb 32
 
 section .text
 
@@ -52,6 +57,7 @@ _start:
     call clear_terminal
     call print_title
     call render_map
+    call print_status
     call read_input
     call handle_input
     jmp .game_loop
@@ -75,6 +81,24 @@ print_title:
     ret
 
 ; ----------------------------------------
+; print_status
+; Prints ray distance.
+; ----------------------------------------
+print_status:
+    lea rsi, [rel distance_label]
+    mov rdx, distance_label_len
+    call print
+
+    mov rax, [rel ray_dist]
+    call print_uint
+
+    lea rsi, [rel newline]
+    mov rdx, 1
+    call print
+
+    ret
+
+; ----------------------------------------
 ; print
 ; rsi = buffer address
 ; rdx = buffer length
@@ -83,6 +107,44 @@ print:
     mov rax, 1      ; syscall: write
     mov rdi, 1      ; stdout
     syscall
+    ret
+
+; ----------------------------------------
+; print_uint
+; rax = unsigned integer to print
+; ----------------------------------------
+print_uint:
+    cmp rax, 0
+    jne .convert
+
+    lea rsi, [rel number_buf]
+    mov byte [rsi], '0'
+    mov rdx, 1
+    call print
+    ret
+
+.convert:
+    lea rsi, [rel number_buf]
+    add rsi, 32
+
+    mov rbx, 10
+    xor rcx, rcx
+
+.convert_loop:
+    xor rdx, rdx
+    div rbx                 ; rax = quotient, rdx = remainder
+
+    dec rsi
+    add dl, '0'
+    mov [rsi], dl
+
+    inc rcx
+
+    test rax, rax
+    jnz .convert_loop
+
+    mov rdx, rcx
+    call print
     ret
 
 ; ----------------------------------------
@@ -270,12 +332,13 @@ try_move:
 ; cast_single_ray
 ; Shoots one ray from the player in the
 ; current direction until it hits '#'.
-; Stores hit position in ray_hit_x/y.
+; Stores hit position and distance.
 ; ----------------------------------------
 cast_single_ray:
     mov r8, [rel player_x]      ; ray x
     mov r9, [rel player_y]      ; ray y
     mov rcx, [rel player_dir]   ; direction
+    xor r10, r10                ; distance counter
 
 .ray_loop:
     cmp rcx, 0
@@ -294,18 +357,22 @@ cast_single_ray:
 
 .north:
     dec r9
+    inc r10
     jmp .check_tile
 
 .east:
     inc r8
+    inc r10
     jmp .check_tile
 
 .south:
     inc r9
+    inc r10
     jmp .check_tile
 
 .west:
     dec r8
+    inc r10
     jmp .check_tile
 
 .check_tile:
@@ -325,6 +392,7 @@ cast_single_ray:
 .hit_wall:
     mov [rel ray_hit_x], r8
     mov [rel ray_hit_y], r9
+    mov [rel ray_dist], r10
     ret
 
 ; ----------------------------------------
