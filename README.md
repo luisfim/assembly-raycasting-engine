@@ -6,7 +6,9 @@ This project was created as a low-level programming experiment to explore how ea
 
 ## Demo
 
-Demo image/GIF coming soon.
+<p align="center">
+  <img src="assets/demo.png" width="700">
+</p>
 
 ## Features
 
