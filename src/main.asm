@@ -6,6 +6,7 @@ global _start
 %define VIEW_WIDTH 31
 %define VIEW_HEIGHT 12
 %define VIEW_CENTER 15
+%define OFFSET_SCALE 5
 
 ; Direction values:
 ; 0 = north
@@ -474,15 +475,17 @@ render_3d_view:
     cmp r13, VIEW_WIDTH
     jge .print_newline
 
-    ; Only draw the center column for now.
-    cmp r13, VIEW_CENTER
-    jne .print_empty
+    ; Calculate wall slice for this screen column.
+    mov rdi, r13
+    call calculate_wall_for_column
+    ; returns:
+    ; rax = wall_start_y
+    ; rbx = wall_end_y
 
-    ; Is y inside wall_start_y <= y < wall_end_y?
-    cmp r12, [rel wall_start_y]
+    cmp r12, rax
     jb .print_empty
 
-    cmp r12, [rel wall_end_y]
+    cmp r12, rbx
     jae .print_empty
 
     lea rsi, [rel wall_char]
@@ -508,6 +511,186 @@ render_3d_view:
     jmp .y_loop
 
 .done:
+    ret
+
+; ----------------------------------------
+; calculate_wall_for_column
+; rdi = screen column
+; returns:
+; rax = wall_start_y
+; rbx = wall_end_y
+; ----------------------------------------
+calculate_wall_for_column:
+    call cast_ray_for_column
+    ; rax = distance
+
+    mov rbx, rax
+
+    cmp rbx, 0
+    jne .distance_ok
+
+    mov rbx, 1
+
+.distance_ok:
+    ; wall_height = (VIEW_HEIGHT * 2) / distance
+    mov rax, VIEW_HEIGHT * 2
+    xor rdx, rdx
+    div rbx
+
+    ; clamp max height to VIEW_HEIGHT
+    cmp rax, VIEW_HEIGHT
+    jle .not_too_big
+
+    mov rax, VIEW_HEIGHT
+
+.not_too_big:
+    ; minimum wall height = 1
+    cmp rax, 1
+    jge .height_ok
+
+    mov rax, 1
+
+.height_ok:
+    ; wall_start_y = (VIEW_HEIGHT - wall_height) / 2
+    mov rcx, VIEW_HEIGHT
+    sub rcx, rax
+    shr rcx, 1
+
+    ; wall_end_y = wall_start_y + wall_height
+    mov rbx, rcx
+    add rbx, rax
+
+    ; return wall_start_y in rax
+    mov rax, rcx
+    ret
+
+; ----------------------------------------
+; cast_ray_for_column
+; rdi = screen column
+; returns:
+; rax = distance to wall
+;
+; This is still a simplified multi-ray version.
+; It offsets the ray sideways based on the screen column.
+; ----------------------------------------
+cast_ray_for_column:
+    ; offset = (column - VIEW_CENTER) / OFFSET_SCALE
+    mov rax, rdi
+    sub rax, VIEW_CENTER
+    cqo
+
+    mov rbx, OFFSET_SCALE
+    idiv rbx
+
+    mov r10, rax                ; sideways offset
+
+    mov r8, [rel player_x]      ; ray x
+    mov r9, [rel player_y]      ; ray y
+    mov rcx, [rel player_dir]   ; direction
+
+    ; Apply sideways offset depending on player direction.
+    cmp rcx, 0
+    je .offset_north
+
+    cmp rcx, 1
+    je .offset_east
+
+    cmp rcx, 2
+    je .offset_south
+
+    cmp rcx, 3
+    je .offset_west
+
+    jmp .start_ray
+
+.offset_north:
+    ; looking north: left/right changes x
+    add r8, r10
+    jmp .start_ray
+
+.offset_east:
+    ; looking east: left/right changes y
+    add r9, r10
+    jmp .start_ray
+
+.offset_south:
+    ; looking south: inverse x offset
+    sub r8, r10
+    jmp .start_ray
+
+.offset_west:
+    ; looking west: inverse y offset
+    sub r9, r10
+    jmp .start_ray
+
+.start_ray:
+    xor r10, r10                ; distance counter
+
+.ray_loop:
+    cmp rcx, 0
+    je .north
+
+    cmp rcx, 1
+    je .east
+
+    cmp rcx, 2
+    je .south
+
+    cmp rcx, 3
+    je .west
+
+    mov rax, 1
+    ret
+
+.north:
+    dec r9
+    inc r10
+    jmp .check_tile
+
+.east:
+    inc r8
+    inc r10
+    jmp .check_tile
+
+.south:
+    inc r9
+    inc r10
+    jmp .check_tile
+
+.west:
+    dec r8
+    inc r10
+    jmp .check_tile
+
+.check_tile:
+    ; Treat out-of-bounds as wall.
+    cmp r8, 0
+    jl .hit_wall
+
+    cmp r8, MAP_WIDTH
+    jge .hit_wall
+
+    cmp r9, 0
+    jl .hit_wall
+
+    cmp r9, MAP_HEIGHT
+    jge .hit_wall
+
+    ; index = y * MAP_WIDTH + x
+    mov rax, r9
+    imul rax, MAP_WIDTH
+    add rax, r8
+
+    lea rsi, [rel map]
+    add rsi, rax
+
+    cmp byte [rsi], '#'
+    je .hit_wall
+
+    jmp .ray_loop
+
+.hit_wall:
+    mov rax, r10
     ret
 
 exit_program:
