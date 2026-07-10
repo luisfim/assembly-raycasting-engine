@@ -39,6 +39,11 @@ section .data
 
     dir_chars db ">v<^"
     wall_char db "#"
+    shade_very_close db "@"
+    shade_close db "#"
+    shade_mid db "*"
+    shade_far db "+"
+    shade_very_far db "-"
     empty_char db "."
 
     ; Fixed-point position.
@@ -378,7 +383,11 @@ render_3d_view:
     cmp r12, rbx
     jae .print_empty
 
-    lea rsi, [rel wall_char]
+    ; Choose wall character based on ray distance.
+    ; calculate_wall_for_column returned distance in rdx.
+    mov rdi, rdx
+    call get_wall_shade
+
     mov rdx, 1
     call print
     jmp .next_col
@@ -405,10 +414,17 @@ render_3d_view:
 
 ; rdi = screen column
 ; returns rax = wall_start_y, rbx = wall_end_y
+; rdi = screen column
+; returns:
+; rax = wall_start_y
+; rbx = wall_end_y
+; rdx = ray distance
 calculate_wall_for_column:
     call cast_ray_for_column
 
+    mov r8, rax        ; save original distance for shading
     mov rbx, rax
+
     cmp rbx, 1
     jge .distance_ok
 
@@ -439,11 +455,9 @@ calculate_wall_for_column:
     mov rbx, rcx
     add rbx, rax
 
-    mov rax, rcx
+    mov rax, rcx       ; wall_start_y
+    mov rdx, r8        ; return distance for shading
     ret
-
-; rdi = screen column
-; returns rax = distance in ray steps
 cast_ray_for_column:
     ; angle_offset = (column - VIEW_CENTER) / ANGLE_COLUMN_SCALE
     mov rax, rdi
@@ -524,6 +538,44 @@ normalize_angle:
     jmp .high_check
 
 .done:
+    ret
+
+; ----------------------------------------
+; get_wall_shade
+; rdi = ray distance
+; returns:
+; rsi = address of shade character
+; ----------------------------------------
+get_wall_shade:
+    cmp rdi, 8
+    jle .very_close
+
+    cmp rdi, 16
+    jle .close
+
+    cmp rdi, 32
+    jle .mid
+
+    cmp rdi, 48
+    jle .far
+
+    lea rsi, [rel shade_very_far]
+    ret
+
+.very_close:
+    lea rsi, [rel shade_very_close]
+    ret
+
+.close:
+    lea rsi, [rel shade_close]
+    ret
+
+.mid:
+    lea rsi, [rel shade_mid]
+    ret
+
+.far:
+    lea rsi, [rel shade_far]
     ret
 
 exit_program:
