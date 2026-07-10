@@ -11,7 +11,7 @@ global _start
 %define FP_SHIFT 10
 %define MAX_RAY_STEPS 128
 
-%define MAX_CELL_BYTES 3
+%define MAX_CELL_BYTES 16
 %define VIEW_STRIDE_BYTES ((VIEW_WIDTH * MAX_CELL_BYTES) + 1)
 %define VIEW_BUFFER_SIZE (VIEW_STRIDE_BYTES * VIEW_HEIGHT)
 
@@ -39,6 +39,18 @@ global _start
 section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
+
+    cursor_home db 27, "[H"
+    cursor_home_len equ $ - cursor_home
+
+    clear_to_end db 27, "[J"
+    clear_to_end_len equ $ - clear_to_end
+
+    hide_cursor db 27, "[?25l"
+    hide_cursor_len equ $ - hide_cursor
+
+    show_cursor db 27, "[?25h"
+    show_cursor_len equ $ - show_cursor
 
     title db "asm-raycaster", 10
           db "W/S = move | A/D = rotate | E = interact | M = minimap | X = quit", 10
@@ -69,6 +81,24 @@ section .data
     hud_off_len equ $ - hud_off
 
     dir_chars db ">v<^"
+
+        color_reset db 27, "[0m"
+    color_reset_len equ $ - color_reset
+
+    color_wall_near db 27, "[97m"     ; bright white
+    color_wall_near_len equ $ - color_wall_near
+
+    color_wall_mid db 27, "[37m"      ; white/gray
+    color_wall_mid_len equ $ - color_wall_mid
+
+    color_wall_far db 27, "[90m"      ; dark gray
+    color_wall_far_len equ $ - color_wall_far
+
+    color_door db 27, "[33m"          ; yellow
+    color_door_len equ $ - color_door
+
+    color_floor db 27, "[90m"         ; dark gray
+    color_floor_len equ $ - color_floor
 
     ; Unicode wall shades.
     shade_very_close db "█"
@@ -164,9 +194,11 @@ section .text
 
 _start:
     call enable_raw_mode
+    call hide_terminal_cursor
+    call clear_terminal
 
 .game_loop:
-    call clear_terminal
+    call move_cursor_home
     call print_title
     call render_3d_view
     call print_status
@@ -181,6 +213,46 @@ _start:
 clear_terminal:
     lea rsi, [rel clear_screen]
     mov rdx, clear_screen_len
+    call print
+    ret
+
+; ----------------------------------------
+; move_cursor_home
+; Moves cursor to top-left without clearing
+; the whole screen.
+; ----------------------------------------
+move_cursor_home:
+    lea rsi, [rel cursor_home]
+    mov rdx, cursor_home_len
+    call print
+    ret
+
+; ----------------------------------------
+; clear_remaining_screen
+; Clears everything below the current cursor.
+; Useful when minimap is toggled off.
+; ----------------------------------------
+clear_remaining_screen:
+    lea rsi, [rel clear_to_end]
+    mov rdx, clear_to_end_len
+    call print
+    ret
+
+; ----------------------------------------
+; hide_terminal_cursor
+; ----------------------------------------
+hide_terminal_cursor:
+    lea rsi, [rel hide_cursor]
+    mov rdx, hide_cursor_len
+    call print
+    ret
+
+; ----------------------------------------
+; show_terminal_cursor
+; ----------------------------------------
+show_terminal_cursor:
+    lea rsi, [rel show_cursor]
+    mov rdx, show_cursor_len
     call print
     ret
 
@@ -457,18 +529,32 @@ render_3d_view:
     cmp r12, rbx
     jae .empty_cell
 
-    mov rdi, rdx
+    ; Save ray distance
+    mov r15, rdx
+
+    ; Get wall color
+    mov rdi, r15
+    call get_wall_color
+
+    ; Get wall shade character
+    mov rdi, r15
     call get_wall_shade
-    call copy_to_frame
+
+    ; Copy colored wall cell to frame buffer
+    call copy_colored_to_frame
     jmp .next_col
 
 .empty_cell:
     cmp r12, VIEW_HEIGHT / 2
     jb .ceiling_cell
 
+    lea r8, [rel color_floor]
+    mov r9, color_floor_len
+
     lea rsi, [rel floor_char]
     mov rdx, 1
-    call copy_to_frame
+    call copy_colored_to_frame
+
     jmp .next_col
 
 .ceiling_cell:
@@ -492,6 +578,32 @@ render_3d_view:
     mov rdx, r14
     sub rdx, rsi
     call print
+    ret
+
+; ----------------------------------------
+; copy_colored_to_frame
+; r8  = color address
+; r9  = color byte length
+; rsi = character address
+; rdx = character byte length
+; r14 = destination pointer
+; ----------------------------------------
+copy_colored_to_frame:
+    push rsi
+    push rdx
+
+    mov rsi, r8
+    mov rdx, r9
+    call copy_to_frame
+
+    pop rdx
+    pop rsi
+    call copy_to_frame
+
+    lea rsi, [rel color_reset]
+    mov rdx, color_reset_len
+    call copy_to_frame
+
     ret
 
 ; ----------------------------------------
@@ -672,6 +784,43 @@ cast_ray_for_column:
 .hit_door:
     mov byte [rel ray_tile], 'D'
     mov rax, rcx
+    ret
+
+; ----------------------------------------
+; get_wall_color
+; rdi = ray distance
+; returns:
+; r8 = color address
+; r9 = color byte length
+; ----------------------------------------
+get_wall_color:
+    mov al, [rel ray_tile]
+    cmp al, 'D'
+    je .door_color
+
+    cmp rdi, 16
+    jle .near_wall
+
+    cmp rdi, 32
+    jle .mid_wall
+
+    lea r8, [rel color_wall_far]
+    mov r9, color_wall_far_len
+    ret
+
+.near_wall:
+    lea r8, [rel color_wall_near]
+    mov r9, color_wall_near_len
+    ret
+
+.mid_wall:
+    lea r8, [rel color_wall_mid]
+    mov r9, color_wall_mid_len
+    ret
+
+.door_color:
+    lea r8, [rel color_door]
+    mov r9, color_door_len
     ret
 
 ; ----------------------------------------
@@ -1071,6 +1220,7 @@ restore_terminal:
 ; exit_program
 ; ----------------------------------------
 exit_program:
+    call show_terminal_cursor
     call restore_terminal
 
     mov rax, 60
