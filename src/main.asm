@@ -7,8 +7,13 @@ global _start
 %define VIEW_HEIGHT 24
 %define VIEW_CENTER 31
 %define ANGLE_COLUMN_SCALE 8
+
 %define FP_SHIFT 10
 %define MAX_RAY_STEPS 128
+
+%define MAX_CELL_BYTES 3
+%define VIEW_STRIDE_BYTES ((VIEW_WIDTH * MAX_CELL_BYTES) + 1)
+%define VIEW_BUFFER_SIZE (VIEW_STRIDE_BYTES * VIEW_HEIGHT)
 
 %define SYS_IOCTL 16
 
@@ -21,13 +26,7 @@ global _start
 %define VTIME_OFFSET 5
 %define VMIN_OFFSET 6
 
-%define VIEW_STRIDE (VIEW_WIDTH + 1)
-%define VIEW_BUFFER_SIZE (VIEW_STRIDE * VIEW_HEIGHT)
-
 ; Clears ICANON and ECHO flags.
-; ICANON = 0x00000002
-; ECHO   = 0x00000008
-; ~(ICANON | ECHO) = 0xfffffff5
 %define RAW_LFLAG_MASK 0xfffffff5
 
 ; Angle system:
@@ -42,14 +41,14 @@ section .data
     clear_screen_len equ $ - clear_screen
 
     title db "asm-raycaster", 10
-        db "W/S = move | A/D = rotate | E = interact | M = minimap | X = quit", 10, 10
+          db "W/S = move | A/D = rotate | E = interact | M = minimap | X = quit", 10
+          db "Unicode wall shading + frame buffer enabled.", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
     map_label_len equ $ - map_label
 
-    view_label db 10, "3D raycast view:", 10
-    view_label_len equ $ - view_label
+    newline db 10
 
     hud_label db 10, "HUD | x="
     hud_label_len equ $ - hud_label
@@ -69,33 +68,61 @@ section .data
     hud_off db "off"
     hud_off_len equ $ - hud_off
 
-    newline db 10
-
     dir_chars db ">v<^"
-    wall_char db "#"
-    shade_very_close db "@"
-    shade_close db "#"
-    shade_mid db "*"
-    shade_far db "+"
-    shade_very_far db "-"
-    empty_char db "."
-    side_very_close db "%"
-    side_close db "="
-    side_mid db ":"
-    side_far db ","
-    side_very_far db "'"
+
+    ; Unicode wall shades.
+    shade_very_close db "█"
+    shade_very_close_len equ $ - shade_very_close
+
+    shade_close db "▓"
+    shade_close_len equ $ - shade_close
+
+    shade_mid db "▒"
+    shade_mid_len equ $ - shade_mid
+
+    shade_far db "░"
+    shade_far_len equ $ - shade_far
+
+    shade_very_far db " "
+    shade_very_far_len equ $ - shade_very_far
+
+    ; Side-wall shades.
+    side_very_close db "▓"
+    side_very_close_len equ $ - side_very_close
+
+    side_close db "▒"
+    side_close_len equ $ - side_close
+
+    side_mid db "░"
+    side_mid_len equ $ - side_mid
+
+    side_far db "."
+    side_far_len equ $ - side_far
+
+    side_very_far db " "
+    side_very_far_len equ $ - side_very_far
+
+    ; Door shades.
     door_very_close db "H"
+    door_very_close_len equ $ - door_very_close
+
     door_close db "D"
+    door_close_len equ $ - door_close
+
     door_mid db "|"
+    door_mid_len equ $ - door_mid
+
     door_far db ";"
+    door_far_len equ $ - door_far
+
     door_very_far db "."
+    door_very_far_len equ $ - door_very_far
 
     ceiling_char db " "
     floor_char db "."
 
     ; Fixed-point position.
     ; 1024 = 1 tile.
-    ; Start centered at map tile (4,5).
     player_x_fp dq 2560     ; x = 2.5 tiles
     player_y_fp dq 6656     ; y = 6.5 tiles
     player_angle dq 0       ; facing east
@@ -127,7 +154,7 @@ section .bss
 
     old_termios resb TERMIOS_SIZE
     raw_termios resb TERMIOS_SIZE
-    
+
     view_buffer resb VIEW_BUFFER_SIZE
 
     prev_tile_x resq 1
@@ -137,6 +164,7 @@ section .text
 
 _start:
     call enable_raw_mode
+
 .game_loop:
     call clear_terminal
     call print_title
@@ -147,18 +175,29 @@ _start:
     call handle_input
     jmp .game_loop
 
+; ----------------------------------------
+; clear_terminal
+; ----------------------------------------
 clear_terminal:
     lea rsi, [rel clear_screen]
     mov rdx, clear_screen_len
     call print
     ret
 
+; ----------------------------------------
+; print_title
+; ----------------------------------------
 print_title:
     lea rsi, [rel title]
     mov rdx, title_len
     call print
     ret
 
+; ----------------------------------------
+; print
+; rsi = buffer address
+; rdx = buffer length
+; ----------------------------------------
 print:
     mov rax, 1
     mov rdi, 1
@@ -166,67 +205,9 @@ print:
     ret
 
 ; ----------------------------------------
-; print_status
-; Prints a simple HUD with player position,
-; angle, and minimap state.
+; print_uint
+; rax = unsigned integer
 ; ----------------------------------------
-print_status:
-    ; HUD | x=
-    lea rsi, [rel hud_label]
-    mov rdx, hud_label_len
-    call print
-
-    ; print player x tile
-    mov rax, [rel player_x_fp]
-    sar rax, FP_SHIFT
-    call print_uint
-
-    ; y=
-    lea rsi, [rel hud_y_label]
-    mov rdx, hud_y_label_len
-    call print
-
-    ; print player y tile
-    mov rax, [rel player_y_fp]
-    sar rax, FP_SHIFT
-    call print_uint
-
-    ; angle=
-    lea rsi, [rel hud_angle_label]
-    mov rdx, hud_angle_label_len
-    call print
-
-    ; print player angle
-    mov rax, [rel player_angle]
-    call print_uint
-
-    ; minimap=
-    lea rsi, [rel hud_minimap_label]
-    mov rdx, hud_minimap_label_len
-    call print
-
-    ; print on/off
-    mov al, [rel show_minimap]
-    cmp al, 1
-    je .minimap_on
-
-.minimap_off:
-    lea rsi, [rel hud_off]
-    mov rdx, hud_off_len
-    call print
-    jmp .done
-
-.minimap_on:
-    lea rsi, [rel hud_on]
-    mov rdx, hud_on_len
-    call print
-
-.done:
-    lea rsi, [rel newline]
-    mov rdx, 1
-    call print
-    ret
-
 print_uint:
     cmp rax, 0
     jne .convert
@@ -261,18 +242,23 @@ print_uint:
     call print
     ret
 
+; ----------------------------------------
+; read_input
+; Non-blocking-ish input using raw terminal mode.
+; ----------------------------------------
 read_input:
-    ; Clear input buffer first.
-    ; If read() times out, input_buf stays 0.
     mov byte [rel input_buf], 0
 
-    mov rax, 0              ; syscall: read
-    mov rdi, 0              ; stdin
+    mov rax, 0
+    mov rdi, 0
     lea rsi, [rel input_buf]
-    mov rdx, 1              ; read one byte
+    mov rdx, 1
     syscall
     ret
 
+; ----------------------------------------
+; handle_input
+; ----------------------------------------
 handle_input:
     mov al, [rel input_buf]
 
@@ -313,6 +299,9 @@ handle_input:
 
     ret
 
+; ----------------------------------------
+; rotate_left
+; ----------------------------------------
 rotate_left:
     mov rax, [rel player_angle]
 
@@ -329,6 +318,9 @@ rotate_left:
     mov [rel player_angle], rax
     ret
 
+; ----------------------------------------
+; rotate_right
+; ----------------------------------------
 rotate_right:
     mov rax, [rel player_angle]
     inc rax
@@ -342,6 +334,9 @@ rotate_right:
     mov [rel player_angle], rax
     ret
 
+; ----------------------------------------
+; move_forward
+; ----------------------------------------
 move_forward:
     mov rcx, [rel player_angle]
     call get_direction_vector
@@ -357,6 +352,9 @@ move_forward:
     call try_move_fp
     ret
 
+; ----------------------------------------
+; move_backward
+; ----------------------------------------
 move_backward:
     mov rcx, [rel player_angle]
     call get_direction_vector
@@ -372,8 +370,13 @@ move_backward:
     call try_move_fp
     ret
 
+; ----------------------------------------
+; get_direction_vector
 ; rcx = angle index
-; returns r10 = dx, r11 = dy
+; returns:
+; r10 = dx
+; r11 = dy
+; ----------------------------------------
 get_direction_vector:
     lea rsi, [rel dir_dx]
     movsxd r10, dword [rsi + rcx * 4]
@@ -382,8 +385,11 @@ get_direction_vector:
     movsxd r11, dword [rsi + rcx * 4]
     ret
 
-; rax = new x fp
-; rbx = new y fp
+; ----------------------------------------
+; try_move_fp
+; rax = new x fixed-point
+; rbx = new y fixed-point
+; ----------------------------------------
 try_move_fp:
     mov r8, rax
     sar r8, FP_SHIFT
@@ -419,90 +425,25 @@ try_move_fp:
 .blocked:
     ret
 
-render_map:
-    lea rsi, [rel map_label]
-    mov rdx, map_label_len
-    call print
-
-    mov r14, [rel player_x_fp]
-    sar r14, FP_SHIFT
-
-    mov r15, [rel player_y_fp]
-    sar r15, FP_SHIFT
-
-    xor r12, r12
-
-.y_loop:
-    cmp r12, MAP_HEIGHT
-    jge .done
-
-    xor r13, r13
-
-.x_loop:
-    cmp r13, MAP_WIDTH
-    jge .print_newline
-
-    cmp r13, r14
-    jne .print_map_tile
-    cmp r12, r15
-    jne .print_map_tile
-
-    ; direction char = angle / 4
-    mov rax, [rel player_angle]
-    shr rax, 2
-    lea rsi, [rel dir_chars]
-    add rsi, rax
-
-    mov rdx, 1
-    call print
-    jmp .next_tile
-
-.print_map_tile:
-    mov rax, r12
-    imul rax, MAP_WIDTH
-    add rax, r13
-
-    lea rsi, [rel map]
-    add rsi, rax
-
-    mov rdx, 1
-    call print
-
-.next_tile:
-    inc r13
-    jmp .x_loop
-
-.print_newline:
-    lea rsi, [rel newline]
-    mov rdx, 1
-    call print
-
-    inc r12
-    jmp .y_loop
-
-.done:
-    ret
-
 ; ----------------------------------------
 ; render_3d_view
-; Builds the whole 3D view in memory first,
+; Builds the whole first-person view in memory,
 ; then prints it with one write syscall.
 ; ----------------------------------------
 render_3d_view:
-    lea r14, [rel view_buffer]      ; current buffer position
-    xor r12, r12                    ; y = 0
+    lea r14, [rel view_buffer]
+    xor r12, r12
 
 .y_loop:
     cmp r12, VIEW_HEIGHT
     jge .print_buffer
 
-    xor r13, r13                    ; x = 0
+    xor r13, r13
 
 .x_loop:
     cmp r13, VIEW_WIDTH
     jge .end_line
 
-    ; Calculate wall slice for this screen column.
     mov rdi, r13
     call calculate_wall_for_column
     ; returns:
@@ -510,40 +451,37 @@ render_3d_view:
     ; rbx = wall_end_y
     ; rdx = ray distance
 
-    ; Is current y inside the wall slice?
     cmp r12, rax
-    jb .print_empty
+    jb .empty_cell
 
     cmp r12, rbx
-    jae .print_empty
+    jae .empty_cell
 
-    ; Choose wall shade based on distance.
     mov rdi, rdx
     call get_wall_shade
-    mov al, [rsi]
-    mov [r14], al
+    call copy_to_frame
     jmp .next_col
 
-.print_empty:
-    ; Ceiling on upper half, floor on lower half.
+.empty_cell:
     cmp r12, VIEW_HEIGHT / 2
-    jb .print_ceiling
+    jb .ceiling_cell
 
-    mov al, [rel floor_char]
-    mov [r14], al
+    lea rsi, [rel floor_char]
+    mov rdx, 1
+    call copy_to_frame
     jmp .next_col
 
-.print_ceiling:
-    mov al, [rel ceiling_char]
-    mov [r14], al
+.ceiling_cell:
+    lea rsi, [rel ceiling_char]
+    mov rdx, 1
+    call copy_to_frame
 
 .next_col:
-    inc r14
     inc r13
     jmp .x_loop
 
 .end_line:
-    mov byte [r14], 10              ; newline
+    mov byte [r14], 10
     inc r14
 
     inc r12
@@ -551,21 +489,46 @@ render_3d_view:
 
 .print_buffer:
     lea rsi, [rel view_buffer]
-    mov rdx, VIEW_BUFFER_SIZE
+    mov rdx, r14
+    sub rdx, rsi
     call print
     ret
 
-; rdi = screen column
-; returns rax = wall_start_y, rbx = wall_end_y
+; ----------------------------------------
+; copy_to_frame
+; rsi = source address
+; rdx = byte length
+; r14 = destination pointer
+; ----------------------------------------
+copy_to_frame:
+.copy_loop:
+    cmp rdx, 0
+    je .done
+
+    mov al, [rsi]
+    mov [r14], al
+
+    inc rsi
+    inc r14
+    dec rdx
+
+    jmp .copy_loop
+
+.done:
+    ret
+
+; ----------------------------------------
+; calculate_wall_for_column
 ; rdi = screen column
 ; returns:
 ; rax = wall_start_y
 ; rbx = wall_end_y
 ; rdx = ray distance
+; ----------------------------------------
 calculate_wall_for_column:
     call cast_ray_for_column
 
-    mov r8, rax        ; save original distance for shading
+    mov r8, rax
     mov rbx, rax
 
     cmp rbx, 1
@@ -598,9 +561,17 @@ calculate_wall_for_column:
     mov rbx, rcx
     add rbx, rax
 
-    mov rax, rcx       ; wall_start_y
-    mov rdx, r8        ; return distance for shading
+    mov rax, rcx
+    mov rdx, r8
     ret
+
+; ----------------------------------------
+; cast_ray_for_column
+; rdi = screen column
+; returns:
+; rax = ray distance
+; also updates ray_tile and ray_side
+; ----------------------------------------
 cast_ray_for_column:
     ; angle_offset = (column - VIEW_CENTER) / ANGLE_COLUMN_SCALE
     mov rax, rdi
@@ -646,8 +617,8 @@ cast_ray_for_column:
 
     mov rbx, r9
     sar rbx, FP_SHIFT
-    ; Detect whether the ray crossed into a new tile horizontally or vertically.
-    ; This gives us a simple side-wall shading approximation.
+
+    ; Detect wall side approximation.
     mov rdx, [rel prev_tile_x]
     cmp rax, rdx
     jne .x_side_hit
@@ -666,7 +637,6 @@ cast_ray_for_column:
     mov byte [rel ray_side], 1
 
 .side_done:
-
     cmp rax, 0
     jl .hit_normal_wall
     cmp rax, MAP_WIDTH
@@ -689,7 +659,6 @@ cast_ray_for_column:
     cmp byte [rsi], 'D'
     je .hit_door
 
-    ; Current tile becomes previous tile for the next ray step.
     mov [rel prev_tile_x], rax
     mov [rel prev_tile_y], rbx
 
@@ -705,35 +674,18 @@ cast_ray_for_column:
     mov rax, rcx
     ret
 
-; rax = any angle
-; returns rax wrapped to 0..15
-normalize_angle:
-.low_check:
-    cmp rax, 0
-    jge .high_check
-
-    add rax, 16
-    jmp .low_check
-
-.high_check:
-    cmp rax, 16
-    jl .done
-
-    sub rax, 16
-    jmp .high_check
-
-.done:
-    ret
 ; ----------------------------------------
 ; get_wall_shade
 ; rdi = ray distance
 ; returns:
-; rsi = address of shade character
+; rsi = shade address
+; rdx = shade byte length
 ; ----------------------------------------
 get_wall_shade:
     mov al, [rel ray_tile]
     cmp al, 'D'
     je .door_wall
+
     mov al, [rel ray_side]
     cmp al, 1
     je .side_wall
@@ -752,24 +704,28 @@ get_wall_shade:
     jle .front_far
 
     lea rsi, [rel shade_very_far]
+    mov rdx, shade_very_far_len
     ret
 
 .front_very_close:
     lea rsi, [rel shade_very_close]
+    mov rdx, shade_very_close_len
     ret
 
 .front_close:
     lea rsi, [rel shade_close]
+    mov rdx, shade_close_len
     ret
 
 .front_mid:
     lea rsi, [rel shade_mid]
+    mov rdx, shade_mid_len
     ret
 
 .front_far:
     lea rsi, [rel shade_far]
+    mov rdx, shade_far_len
     ret
-
 
 .side_wall:
     cmp rdi, 8
@@ -785,23 +741,29 @@ get_wall_shade:
     jle .side_far
 
     lea rsi, [rel side_very_far]
+    mov rdx, side_very_far_len
     ret
 
 .side_very_close:
     lea rsi, [rel side_very_close]
+    mov rdx, side_very_close_len
     ret
 
 .side_close:
     lea rsi, [rel side_close]
+    mov rdx, side_close_len
     ret
 
 .side_mid:
     lea rsi, [rel side_mid]
+    mov rdx, side_mid_len
     ret
 
 .side_far:
     lea rsi, [rel side_far]
+    mov rdx, side_far_len
     ret
+
 .door_wall:
     cmp rdi, 8
     jle .door_very_close
@@ -816,79 +778,138 @@ get_wall_shade:
     jle .door_far
 
     lea rsi, [rel door_very_far]
+    mov rdx, door_very_far_len
     ret
 
 .door_very_close:
     lea rsi, [rel door_very_close]
+    mov rdx, door_very_close_len
     ret
 
 .door_close:
     lea rsi, [rel door_close]
+    mov rdx, door_close_len
     ret
 
 .door_mid:
     lea rsi, [rel door_mid]
+    mov rdx, door_mid_len
     ret
 
 .door_far:
     lea rsi, [rel door_far]
+    mov rdx, door_far_len
     ret
 
 ; ----------------------------------------
-; enable_raw_mode
-; Disables canonical input and echo.
-; This allows reading one key at a time
-; without pressing ENTER.
+; normalize_angle
+; rax = angle
+; returns 0..15
 ; ----------------------------------------
-enable_raw_mode:
-    ; ioctl(stdin, TCGETS, old_termios)
-    mov rax, SYS_IOCTL
-    mov rdi, 0
-    mov rsi, TCGETS
-    lea rdx, [rel old_termios]
-    syscall
+normalize_angle:
+.low_check:
+    cmp rax, 0
+    jge .high_check
 
-    ; copy old_termios into raw_termios
-    lea rsi, [rel old_termios]
-    lea rdi, [rel raw_termios]
-    mov rcx, TERMIOS_SIZE
-    rep movsb
+    add rax, 16
+    jmp .low_check
 
-    ; raw_termios.c_lflag &= ~(ICANON | ECHO)
-    and dword [rel raw_termios + TERMIOS_LFLAG], RAW_LFLAG_MASK
+.high_check:
+    cmp rax, 16
+    jl .done
 
-    ; raw_termios.c_cc[VMIN] = 0
-    ; read() can return even if no key was pressed.
-    mov byte [rel raw_termios + TERMIOS_CC + VMIN_OFFSET], 0
+    sub rax, 16
+    jmp .high_check
 
-    ; raw_termios.c_cc[VTIME] = 1
-    ; wait up to 0.1 seconds for input.
-    mov byte [rel raw_termios + TERMIOS_CC + VTIME_OFFSET], 1
-
-    ; ioctl(stdin, TCSETS, raw_termios)
-    mov rax, SYS_IOCTL
-    mov rdi, 0
-    mov rsi, TCSETS
-    lea rdx, [rel raw_termios]
-    syscall
-
+.done:
     ret
 
 ; ----------------------------------------
-; restore_terminal
-; Restores original terminal settings.
+; render_map
+; Debug minimap.
 ; ----------------------------------------
-restore_terminal:
-    mov rax, SYS_IOCTL
-    mov rdi, 0
-    mov rsi, TCSETS
-    lea rdx, [rel old_termios]
-    syscall
+render_map:
+    lea rsi, [rel map_label]
+    mov rdx, map_label_len
+    call print
+
+    mov r14, [rel player_x_fp]
+    sar r14, FP_SHIFT
+
+    mov r15, [rel player_y_fp]
+    sar r15, FP_SHIFT
+
+    xor r12, r12
+
+.y_loop:
+    cmp r12, MAP_HEIGHT
+    jge .done
+
+    xor r13, r13
+
+.x_loop:
+    cmp r13, MAP_WIDTH
+    jge .print_newline
+
+    cmp r13, r14
+    jne .print_map_tile
+    cmp r12, r15
+    jne .print_map_tile
+
+    mov rax, [rel player_angle]
+    shr rax, 2
+    lea rsi, [rel dir_chars]
+    add rsi, rax
+
+    mov rdx, 1
+    call print
+    jmp .next_tile
+
+.print_map_tile:
+    mov rax, r12
+    imul rax, MAP_WIDTH
+    add rax, r13
+
+    lea rsi, [rel map]
+    add rsi, rax
+
+    mov rdx, 1
+    call print
+
+.next_tile:
+    inc r13
+    jmp .x_loop
+
+.print_newline:
+    lea rsi, [rel newline]
+    mov rdx, 1
+    call print
+
+    inc r12
+    jmp .y_loop
+
+.done:
+    ret
+
+; ----------------------------------------
+; render_minimap_if_enabled
+; ----------------------------------------
+render_minimap_if_enabled:
+    mov al, [rel show_minimap]
+    cmp al, 1
+    jne .skip
+
+    lea rsi, [rel newline]
+    mov rdx, 1
+    call print
+
+    call render_map
+
+.skip:
     ret
 
 ; ----------------------------------------
 ; toggle_minimap
-; show_minimap = !show_minimap
 ; ----------------------------------------
 toggle_minimap:
     mov al, [rel show_minimap]
@@ -903,47 +924,23 @@ toggle_minimap:
     mov byte [rel show_minimap], 1
     ret
 
-
-; ----------------------------------------
-; render_minimap_if_enabled
-; Calls render_map only when show_minimap = 1.
-; ----------------------------------------
-render_minimap_if_enabled:
-    mov al, [rel show_minimap]
-
-    cmp al, 1
-    jne .skip
-
-    lea rsi, [rel newline]
-    mov rdx, 1
-    call print
-
-    call render_map
-
-.skip:
-    ret
-
 ; ----------------------------------------
 ; interact_door
 ; Opens a door directly in front of player.
 ; D becomes empty space.
 ; ----------------------------------------
 interact_door:
-    ; Get player direction vector.
     mov rcx, [rel player_angle]
     call get_direction_vector
-    ; returns r10 = dx, r11 = dy
 
-    ; target position = player position + one tile forward
     mov rax, [rel player_x_fp]
     add rax, r10
-    sar rax, FP_SHIFT        ; target tile x
+    sar rax, FP_SHIFT
 
     mov rbx, [rel player_y_fp]
     add rbx, r11
-    sar rbx, FP_SHIFT        ; target tile y
+    sar rbx, FP_SHIFT
 
-    ; bounds check
     cmp rax, 0
     jl .done
     cmp rax, MAP_WIDTH
@@ -954,7 +951,6 @@ interact_door:
     cmp rbx, MAP_HEIGHT
     jge .done
 
-    ; index = y * MAP_WIDTH + x
     mov rcx, rbx
     imul rcx, MAP_WIDTH
     add rcx, rax
@@ -962,7 +958,6 @@ interact_door:
     lea rsi, [rel map]
     add rsi, rcx
 
-    ; If tile is D, open it.
     cmp byte [rsi], 'D'
     jne .done
 
@@ -971,6 +966,110 @@ interact_door:
 .done:
     ret
 
+; ----------------------------------------
+; print_status
+; ----------------------------------------
+print_status:
+    lea rsi, [rel hud_label]
+    mov rdx, hud_label_len
+    call print
+
+    mov rax, [rel player_x_fp]
+    sar rax, FP_SHIFT
+    call print_uint
+
+    lea rsi, [rel hud_y_label]
+    mov rdx, hud_y_label_len
+    call print
+
+    mov rax, [rel player_y_fp]
+    sar rax, FP_SHIFT
+    call print_uint
+
+    lea rsi, [rel hud_angle_label]
+    mov rdx, hud_angle_label_len
+    call print
+
+    mov rax, [rel player_angle]
+    call print_uint
+
+    lea rsi, [rel hud_minimap_label]
+    mov rdx, hud_minimap_label_len
+    call print
+
+    mov al, [rel show_minimap]
+    cmp al, 1
+    je .minimap_on
+
+.minimap_off:
+    lea rsi, [rel hud_off]
+    mov rdx, hud_off_len
+    call print
+    jmp .done
+
+.minimap_on:
+    lea rsi, [rel hud_on]
+    mov rdx, hud_on_len
+    call print
+
+.done:
+    lea rsi, [rel newline]
+    mov rdx, 1
+    call print
+    ret
+
+; ----------------------------------------
+; enable_raw_mode
+; Disables canonical input and echo.
+; Allows reading one key without Enter.
+; ----------------------------------------
+enable_raw_mode:
+    ; ioctl(stdin, TCGETS, old_termios)
+    mov rax, SYS_IOCTL
+    mov rdi, 0
+    mov rsi, TCGETS
+    lea rdx, [rel old_termios]
+    syscall
+
+    ; copy old_termios to raw_termios
+    lea rsi, [rel old_termios]
+    lea rdi, [rel raw_termios]
+    mov rcx, TERMIOS_SIZE
+    rep movsb
+
+    ; raw_termios.c_lflag &= ~(ICANON | ECHO)
+    and dword [rel raw_termios + TERMIOS_LFLAG], RAW_LFLAG_MASK
+
+    ; raw_termios.c_cc[VMIN] = 0
+    mov byte [rel raw_termios + TERMIOS_CC + VMIN_OFFSET], 0
+
+    ; raw_termios.c_cc[VTIME] = 1
+    ; Wait up to 0.1 seconds for input.
+    mov byte [rel raw_termios + TERMIOS_CC + VTIME_OFFSET], 1
+
+    ; ioctl(stdin, TCSETS, raw_termios)
+    mov rax, SYS_IOCTL
+    mov rdi, 0
+    mov rsi, TCSETS
+    lea rdx, [rel raw_termios]
+    syscall
+
+    ret
+
+; ----------------------------------------
+; restore_terminal
+; ----------------------------------------
+restore_terminal:
+    mov rax, SYS_IOCTL
+    mov rdi, 0
+    mov rsi, TCSETS
+    lea rdx, [rel old_termios]
+    syscall
+    ret
+
+; ----------------------------------------
+; exit_program
+; ----------------------------------------
 exit_program:
     call restore_terminal
 
