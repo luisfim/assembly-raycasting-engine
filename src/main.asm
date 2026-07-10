@@ -39,7 +39,7 @@ section .data
     clear_screen_len equ $ - clear_screen
 
     title db "asm-raycaster", 10
-        db "W/S = move | A/D = rotate | X = quit", 10, 10
+        db "W/S = move | A/D = rotate | M = minimap | X = quit", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
@@ -71,6 +71,8 @@ section .data
     player_x_fp dq 4608
     player_y_fp dq 5632
     player_angle dq 0
+
+    show_minimap db 0
 
     map:
         db "################"
@@ -105,6 +107,7 @@ _start:
     call print_title
     call render_3d_view
     call print_status
+    call render_minimap_if_enabled
     call read_input
     call handle_input
     jmp .game_loop
@@ -209,6 +212,11 @@ handle_input:
     je rotate_right
     cmp al, 'D'
     je rotate_right
+
+    cmp al, 'm'
+    je toggle_minimap
+    cmp al, 'M'
+    je toggle_minimap
 
     ret
 
@@ -658,6 +666,43 @@ restore_terminal:
     mov rsi, TCSETS
     lea rdx, [rel old_termios]
     syscall
+    ret
+
+; ----------------------------------------
+; toggle_minimap
+; show_minimap = !show_minimap
+; ----------------------------------------
+toggle_minimap:
+    mov al, [rel show_minimap]
+
+    cmp al, 0
+    je .turn_on
+
+    mov byte [rel show_minimap], 0
+    ret
+
+.turn_on:
+    mov byte [rel show_minimap], 1
+    ret
+
+
+; ----------------------------------------
+; render_minimap_if_enabled
+; Calls render_map only when show_minimap = 1.
+; ----------------------------------------
+render_minimap_if_enabled:
+    mov al, [rel show_minimap]
+
+    cmp al, 1
+    jne .skip
+
+    lea rsi, [rel newline]
+    mov rdx, 1
+    call print
+
+    call render_map
+
+.skip:
     ret
 
 exit_program:
