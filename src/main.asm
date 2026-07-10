@@ -10,6 +10,23 @@ global _start
 %define FP_SHIFT 10
 %define MAX_RAY_STEPS 128
 
+%define SYS_IOCTL 16
+
+%define TCGETS 0x5401
+%define TCSETS 0x5402
+
+%define TERMIOS_SIZE 64
+%define TERMIOS_LFLAG 12
+%define TERMIOS_CC 17
+%define VTIME_OFFSET 5
+%define VMIN_OFFSET 6
+
+; Clears ICANON and ECHO flags.
+; ICANON = 0x00000002
+; ECHO   = 0x00000008
+; ~(ICANON | ECHO) = 0xfffffff5
+%define RAW_LFLAG_MASK 0xfffffff5
+
 ; Angle system:
 ; 0  = east
 ; 4  = south
@@ -23,7 +40,6 @@ section .data
 
     title db "asm-raycaster - fixed-point angled rays", 10
           db "W/S = move forward/backward | A/D = rotate | X = quit", 10
-          db "Press a key, then ENTER.", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
@@ -74,9 +90,13 @@ section .bss
     input_buf resb 8
     number_buf resb 32
 
+    old_termios resb TERMIOS_SIZE
+    raw_termios resb TERMIOS_SIZE
+
 section .text
 
 _start:
+    call enable_raw_mode
 .game_loop:
     call clear_terminal
     call print_title
@@ -153,10 +173,10 @@ print_uint:
     ret
 
 read_input:
-    mov rax, 0
-    mov rdi, 0
+    mov rax, 0              ; syscall: read
+    mov rdi, 0              ; stdin
     lea rsi, [rel input_buf]
-    mov rdx, 8
+    mov rdx, 1              ; read only one byte
     syscall
     ret
 
@@ -578,7 +598,59 @@ get_wall_shade:
     lea rsi, [rel shade_far]
     ret
 
+; ----------------------------------------
+; enable_raw_mode
+; Disables canonical input and echo.
+; This allows reading one key at a time
+; without pressing ENTER.
+; ----------------------------------------
+enable_raw_mode:
+    ; ioctl(stdin, TCGETS, old_termios)
+    mov rax, SYS_IOCTL
+    mov rdi, 0
+    mov rsi, TCGETS
+    lea rdx, [rel old_termios]
+    syscall
+
+    ; copy old_termios into raw_termios
+    lea rsi, [rel old_termios]
+    lea rdi, [rel raw_termios]
+    mov rcx, TERMIOS_SIZE
+    rep movsb
+
+    ; raw_termios.c_lflag &= ~(ICANON | ECHO)
+    and dword [rel raw_termios + TERMIOS_LFLAG], RAW_LFLAG_MASK
+
+    ; raw_termios.c_cc[VMIN] = 1
+    mov byte [rel raw_termios + TERMIOS_CC + VMIN_OFFSET], 1
+
+    ; raw_termios.c_cc[VTIME] = 0
+    mov byte [rel raw_termios + TERMIOS_CC + VTIME_OFFSET], 0
+
+    ; ioctl(stdin, TCSETS, raw_termios)
+    mov rax, SYS_IOCTL
+    mov rdi, 0
+    mov rsi, TCSETS
+    lea rdx, [rel raw_termios]
+    syscall
+
+    ret
+
+; ----------------------------------------
+; restore_terminal
+; Restores original terminal settings.
+; ----------------------------------------
+restore_terminal:
+    mov rax, SYS_IOCTL
+    mov rdi, 0
+    mov rsi, TCSETS
+    lea rdx, [rel old_termios]
+    syscall
+    ret
+
 exit_program:
+    call restore_terminal
+
     mov rax, 60
     mov rdi, 0
     syscall
