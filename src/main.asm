@@ -38,8 +38,8 @@ section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
 
-    title db "asm-raycaster - fixed-point angled rays", 10
-          db "W/S = move forward/backward | A/D = rotate | X = quit", 10
+    title db "asm-raycaster", 10
+        db "W/S = move | A/D = rotate | X = quit", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
@@ -61,6 +61,9 @@ section .data
     shade_far db "+"
     shade_very_far db "-"
     empty_char db "."
+
+    ceiling_char db " "
+    floor_char db "."
 
     ; Fixed-point position.
     ; 1024 = 1 tile.
@@ -100,7 +103,6 @@ _start:
 .game_loop:
     call clear_terminal
     call print_title
-    call render_map
     call render_3d_view
     call print_status
     call read_input
@@ -378,9 +380,9 @@ render_map:
     ret
 
 render_3d_view:
-    lea rsi, [rel view_label]
-    mov rdx, view_label_len
-    call print
+    ; lea rsi, [rel view_label]
+    ; mov rdx, view_label_len
+    ; call print
 
     xor r12, r12
 
@@ -413,7 +415,17 @@ render_3d_view:
     jmp .next_col
 
 .print_empty:
-    lea rsi, [rel empty_char]
+    ; Draw ceiling on upper half, floor on lower half.
+    cmp r12, VIEW_HEIGHT / 2
+    jb .print_ceiling
+
+    lea rsi, [rel floor_char]
+    mov rdx, 1
+    call print
+    jmp .next_col
+
+.print_ceiling:
+    lea rsi, [rel ceiling_char]
     mov rdx, 1
     call print
 
