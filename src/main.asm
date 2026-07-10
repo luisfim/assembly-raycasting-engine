@@ -68,20 +68,20 @@ section .data
     ; Fixed-point position.
     ; 1024 = 1 tile.
     ; Start centered at map tile (4,5).
-    player_x_fp dq 4608
-    player_y_fp dq 5632
-    player_angle dq 0
+    player_x_fp dq 2560     ; x = 2.5 tiles
+    player_y_fp dq 6656     ; y = 6.5 tiles
+    player_angle dq 0       ; facing east
 
     show_minimap db 0
 
     map:
         db "################"
-        db "#              #"
-        db "#      ##      #"
-        db "#      ##      #"
-        db "#              #"
-        db "#              #"
-        db "#              #"
+        db "#      #       #"
+        db "# #### # ##### #"
+        db "# #    #     # #"
+        db "# # ####### #  #"
+        db "# #         #  #"
+        db "#     ###      #"
         db "################"
 
     ; 16 direction vectors, scaled by 1024.
