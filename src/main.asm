@@ -4,50 +4,49 @@ global _start
 %define MAP_HEIGHT 8
 
 %define VIEW_WIDTH 31
-%define VIEW_HEIGHT 12
+%define VIEW_HEIGHT 16
 %define VIEW_CENTER 15
-%define OFFSET_SCALE 5
+%define ANGLE_COLUMN_SCALE 5
+%define FP_SHIFT 10
+%define MAX_RAY_STEPS 128
 
-; Direction values:
-; 0 = north
-; 1 = east
-; 2 = south
-; 3 = west
+; Angle system:
+; 0  = east
+; 4  = south
+; 8  = west
+; 12 = north
+; 16 total angle steps
 
 section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
 
-    title db "asm-raycaster - step 7: first 3D wall slice", 10
+    title db "asm-raycaster - fixed-point angled rays", 10
           db "W/S = move forward/backward | A/D = rotate | X = quit", 10
-          db "The 3D preview uses ray distance to draw wall height.", 10
           db "Press a key, then ENTER.", 10, 10
     title_len equ $ - title
 
-    view_label db 10, "Single-ray 3D preview:", 10
+    map_label db "2D map:", 10
+    map_label_len equ $ - map_label
+
+    view_label db 10, "3D raycast view:", 10
     view_label_len equ $ - view_label
 
-    distance_label db 10, "Ray distance to wall: "
-    distance_label_len equ $ - distance_label
+    angle_label db 10, "Player angle index: "
+    angle_label_len equ $ - angle_label
 
     newline db 10
 
-    dir_chars db "^>v<"
-    hit_char db "*"
+    dir_chars db ">v<^"
     wall_char db "#"
     empty_char db "."
 
-    player_x dq 4
-    player_y dq 5
-    player_dir dq 1
-
-    ray_hit_x dq 0
-    ray_hit_y dq 0
-    ray_dist dq 0
-
-    wall_height dq 0
-    wall_start_y dq 0
-    wall_end_y dq 0
+    ; Fixed-point position.
+    ; 1024 = 1 tile.
+    ; Start centered at map tile (4,5).
+    player_x_fp dq 4608
+    player_y_fp dq 5632
+    player_angle dq 0
 
     map:
         db "################"
@@ -59,6 +58,13 @@ section .data
         db "#              #"
         db "################"
 
+    ; 16 direction vectors, scaled by 1024.
+    dir_dx dd 1024, 946, 724, 392, 0, -392, -724, -946
+           dd -1024, -946, -724, -392, 0, 392, 724, 946
+
+    dir_dy dd 0, 392, 724, 946, 1024, 946, 724, 392
+           dd 0, -392, -724, -946, -1024, -946, -724, -392
+
 section .bss
     input_buf resb 8
     number_buf resb 32
@@ -67,15 +73,11 @@ section .text
 
 _start:
 .game_loop:
-    call cast_single_ray
-    call calculate_wall_slice
-
     call clear_terminal
     call print_title
     call render_map
     call render_3d_view
     call print_status
-
     call read_input
     call handle_input
     jmp .game_loop
@@ -99,11 +101,11 @@ print:
     ret
 
 print_status:
-    lea rsi, [rel distance_label]
-    mov rdx, distance_label_len
+    lea rsi, [rel angle_label]
+    mov rdx, angle_label_len
     call print
 
-    mov rax, [rel ray_dist]
+    mov rax, [rel player_angle]
     call print_uint
 
     lea rsi, [rel newline]
@@ -184,110 +186,95 @@ handle_input:
     ret
 
 rotate_left:
-    mov rax, [rel player_dir]
+    mov rax, [rel player_angle]
 
     cmp rax, 0
     jne .not_zero
 
-    mov rax, 3
+    mov rax, 15
     jmp .store
 
 .not_zero:
     dec rax
 
 .store:
-    mov [rel player_dir], rax
+    mov [rel player_angle], rax
     ret
 
 rotate_right:
-    mov rax, [rel player_dir]
+    mov rax, [rel player_angle]
     inc rax
 
-    cmp rax, 4
+    cmp rax, 16
     jne .store
 
     xor rax, rax
 
 .store:
-    mov [rel player_dir], rax
+    mov [rel player_angle], rax
     ret
 
 move_forward:
-    mov rax, [rel player_x]
-    mov rbx, [rel player_y]
-    mov rcx, [rel player_dir]
+    mov rcx, [rel player_angle]
+    call get_direction_vector
 
-    cmp rcx, 0
-    je .north
-    cmp rcx, 1
-    je .east
-    cmp rcx, 2
-    je .south
-    cmp rcx, 3
-    je .west
+    ; movement speed = half tile
+    sar r10, 1
+    sar r11, 1
 
-    ret
-
-.north:
-    dec rbx
-    call try_move
-    ret
-
-.east:
-    inc rax
-    call try_move
-    ret
-
-.south:
-    inc rbx
-    call try_move
-    ret
-
-.west:
-    dec rax
-    call try_move
+    mov rax, [rel player_x_fp]
+    mov rbx, [rel player_y_fp]
+    add rax, r10
+    add rbx, r11
+    call try_move_fp
     ret
 
 move_backward:
-    mov rax, [rel player_x]
-    mov rbx, [rel player_y]
-    mov rcx, [rel player_dir]
+    mov rcx, [rel player_angle]
+    call get_direction_vector
 
-    cmp rcx, 0
-    je .north
-    cmp rcx, 1
-    je .east
-    cmp rcx, 2
-    je .south
-    cmp rcx, 3
-    je .west
+    ; movement speed = half tile
+    sar r10, 1
+    sar r11, 1
 
+    mov rax, [rel player_x_fp]
+    mov rbx, [rel player_y_fp]
+    sub rax, r10
+    sub rbx, r11
+    call try_move_fp
     ret
 
-.north:
-    inc rbx
-    call try_move
+; rcx = angle index
+; returns r10 = dx, r11 = dy
+get_direction_vector:
+    lea rsi, [rel dir_dx]
+    movsxd r10, dword [rsi + rcx * 4]
+
+    lea rsi, [rel dir_dy]
+    movsxd r11, dword [rsi + rcx * 4]
     ret
 
-.east:
-    dec rax
-    call try_move
-    ret
+; rax = new x fp
+; rbx = new y fp
+try_move_fp:
+    mov r8, rax
+    sar r8, FP_SHIFT
 
-.south:
-    dec rbx
-    call try_move
-    ret
+    mov r9, rbx
+    sar r9, FP_SHIFT
 
-.west:
-    inc rax
-    call try_move
-    ret
+    cmp r8, 0
+    jl .blocked
+    cmp r8, MAP_WIDTH
+    jge .blocked
+    cmp r9, 0
+    jl .blocked
+    cmp r9, MAP_HEIGHT
+    jge .blocked
 
-try_move:
-    mov rcx, rbx
+    mov rcx, r9
     imul rcx, MAP_WIDTH
-    add rcx, rax
+    add rcx, r8
 
     lea rsi, [rel map]
     add rsi, rcx
@@ -295,105 +282,23 @@ try_move:
     cmp byte [rsi], '#'
     je .blocked
 
-    mov [rel player_x], rax
-    mov [rel player_y], rbx
+    mov [rel player_x_fp], rax
+    mov [rel player_y_fp], rbx
 
 .blocked:
     ret
 
-cast_single_ray:
-    mov r8, [rel player_x]
-    mov r9, [rel player_y]
-    mov rcx, [rel player_dir]
-    xor r10, r10
-
-.ray_loop:
-    cmp rcx, 0
-    je .north
-    cmp rcx, 1
-    je .east
-    cmp rcx, 2
-    je .south
-    cmp rcx, 3
-    je .west
-    ret
-
-.north:
-    dec r9
-    inc r10
-    jmp .check_tile
-
-.east:
-    inc r8
-    inc r10
-    jmp .check_tile
-
-.south:
-    inc r9
-    inc r10
-    jmp .check_tile
-
-.west:
-    dec r8
-    inc r10
-    jmp .check_tile
-
-.check_tile:
-    mov rax, r9
-    imul rax, MAP_WIDTH
-    add rax, r8
-
-    lea rsi, [rel map]
-    add rsi, rax
-
-    cmp byte [rsi], '#'
-    je .hit_wall
-
-    jmp .ray_loop
-
-.hit_wall:
-    mov [rel ray_hit_x], r8
-    mov [rel ray_hit_y], r9
-    mov [rel ray_dist], r10
-    ret
-
-calculate_wall_slice:
-    ; wall_height = VIEW_HEIGHT / ray_dist
-    mov rax, VIEW_HEIGHT
-    xor rdx, rdx
-
-    mov rbx, [rel ray_dist]
-    cmp rbx, 0
-    jne .divide
-
-    mov rbx, 1
-
-.divide:
-    div rbx
-
-    ; minimum wall height = 1
-    cmp rax, 1
-    jge .height_ok
-
-    mov rax, 1
-
-.height_ok:
-    mov [rel wall_height], rax
-
-    ; wall_start_y = (VIEW_HEIGHT - wall_height) / 2
-    mov rcx, VIEW_HEIGHT
-    sub rcx, rax
-    shr rcx, 1
-
-    mov [rel wall_start_y], rcx
-
-    ; wall_end_y = wall_start_y + wall_height
-    add rax, rcx
-    mov [rel wall_end_y], rax
-
-    ret
-
 render_map:
+    lea rsi, [rel map_label]
+    mov rdx, map_label_len
+    call print
+
+    mov r14, [rel player_x_fp]
+    sar r14, FP_SHIFT
+
+    mov r15, [rel player_y_fp]
+    sar r15, FP_SHIFT
+
     xor r12, r12
 
 .y_loop:
@@ -406,28 +311,17 @@ render_map:
     cmp r13, MAP_WIDTH
     jge .print_newline
 
-    cmp r13, [rel player_x]
-    jne .check_ray_hit
+    cmp r13, r14
+    jne .print_map_tile
+    cmp r12, r15
+    jne .print_map_tile
 
-    cmp r12, [rel player_y]
-    jne .check_ray_hit
-
-    mov rax, [rel player_dir]
+    ; direction char = angle / 4
+    mov rax, [rel player_angle]
+    shr rax, 2
     lea rsi, [rel dir_chars]
     add rsi, rax
 
-    mov rdx, 1
-    call print
-    jmp .next_tile
-
-.check_ray_hit:
-    cmp r13, [rel ray_hit_x]
-    jne .print_map_tile
-
-    cmp r12, [rel ray_hit_y]
-    jne .print_map_tile
-
-    lea rsi, [rel hit_char]
     mov rdx, 1
     call print
     jmp .next_tile
@@ -463,24 +357,20 @@ render_3d_view:
     mov rdx, view_label_len
     call print
 
-    xor r12, r12        ; y = 0
+    xor r12, r12
 
 .y_loop:
     cmp r12, VIEW_HEIGHT
     jge .done
 
-    xor r13, r13        ; x = 0
+    xor r13, r13
 
 .x_loop:
     cmp r13, VIEW_WIDTH
     jge .print_newline
 
-    ; Calculate wall slice for this screen column.
     mov rdi, r13
     call calculate_wall_for_column
-    ; returns:
-    ; rax = wall_start_y
-    ; rbx = wall_end_y
 
     cmp r12, rax
     jb .print_empty
@@ -513,176 +403,99 @@ render_3d_view:
 .done:
     ret
 
-; ----------------------------------------
-; calculate_wall_for_column
 ; rdi = screen column
-; returns:
-; rax = wall_start_y
-; rbx = wall_end_y
-; ----------------------------------------
+; returns rax = wall_start_y, rbx = wall_end_y
 calculate_wall_for_column:
     call cast_ray_for_column
-    ; rax = distance
 
     mov rbx, rax
-
-    cmp rbx, 0
-    jne .distance_ok
+    cmp rbx, 1
+    jge .distance_ok
 
     mov rbx, 1
 
 .distance_ok:
-    ; wall_height = (VIEW_HEIGHT * 2) / distance
-    mov rax, VIEW_HEIGHT * 2
+    ; wall height = (VIEW_HEIGHT * 8) / distance
+    mov rax, VIEW_HEIGHT * 8
     xor rdx, rdx
     div rbx
 
-    ; clamp max height to VIEW_HEIGHT
     cmp rax, VIEW_HEIGHT
     jle .not_too_big
 
     mov rax, VIEW_HEIGHT
 
 .not_too_big:
-    ; minimum wall height = 1
     cmp rax, 1
     jge .height_ok
 
     mov rax, 1
 
 .height_ok:
-    ; wall_start_y = (VIEW_HEIGHT - wall_height) / 2
     mov rcx, VIEW_HEIGHT
     sub rcx, rax
     shr rcx, 1
 
-    ; wall_end_y = wall_start_y + wall_height
     mov rbx, rcx
     add rbx, rax
 
-    ; return wall_start_y in rax
     mov rax, rcx
     ret
 
-; ----------------------------------------
-; cast_ray_for_column
 ; rdi = screen column
-; returns:
-; rax = distance to wall
-;
-; This is still a simplified multi-ray version.
-; It offsets the ray sideways based on the screen column.
-; ----------------------------------------
+; returns rax = distance in ray steps
 cast_ray_for_column:
-    ; offset = (column - VIEW_CENTER) / OFFSET_SCALE
+    ; angle_offset = (column - VIEW_CENTER) / ANGLE_COLUMN_SCALE
     mov rax, rdi
     sub rax, VIEW_CENTER
     cqo
 
-    mov rbx, OFFSET_SCALE
+    mov rbx, ANGLE_COLUMN_SCALE
     idiv rbx
 
-    mov r10, rax                ; sideways offset
+    add rax, [rel player_angle]
+    call normalize_angle
 
-    mov r8, [rel player_x]      ; ray x
-    mov r9, [rel player_y]      ; ray y
-    mov rcx, [rel player_dir]   ; direction
+    mov rcx, rax
+    call get_direction_vector
 
-    ; Apply sideways offset depending on player direction.
-    cmp rcx, 0
-    je .offset_north
+    ; ray step = direction / 4
+    sar r10, 2
+    sar r11, 2
 
-    cmp rcx, 1
-    je .offset_east
-
-    cmp rcx, 2
-    je .offset_south
-
-    cmp rcx, 3
-    je .offset_west
-
-    jmp .start_ray
-
-.offset_north:
-    ; looking north: left/right changes x
-    add r8, r10
-    jmp .start_ray
-
-.offset_east:
-    ; looking east: left/right changes y
-    add r9, r10
-    jmp .start_ray
-
-.offset_south:
-    ; looking south: inverse x offset
-    sub r8, r10
-    jmp .start_ray
-
-.offset_west:
-    ; looking west: inverse y offset
-    sub r9, r10
-    jmp .start_ray
-
-.start_ray:
-    xor r10, r10                ; distance counter
+    mov r8, [rel player_x_fp]
+    mov r9, [rel player_y_fp]
+    xor rcx, rcx
 
 .ray_loop:
-    cmp rcx, 0
-    je .north
-
-    cmp rcx, 1
-    je .east
-
-    cmp rcx, 2
-    je .south
-
-    cmp rcx, 3
-    je .west
-
-    mov rax, 1
-    ret
-
-.north:
-    dec r9
-    inc r10
-    jmp .check_tile
-
-.east:
-    inc r8
-    inc r10
-    jmp .check_tile
-
-.south:
-    inc r9
-    inc r10
-    jmp .check_tile
-
-.west:
-    dec r8
-    inc r10
-    jmp .check_tile
-
-.check_tile:
-    ; Treat out-of-bounds as wall.
-    cmp r8, 0
-    jl .hit_wall
-
-    cmp r8, MAP_WIDTH
+    cmp rcx, MAX_RAY_STEPS
     jge .hit_wall
 
-    cmp r9, 0
-    jl .hit_wall
+    add r8, r10
+    add r9, r11
+    inc rcx
 
-    cmp r9, MAP_HEIGHT
+    mov rax, r8
+    sar rax, FP_SHIFT
+
+    mov rbx, r9
+    sar rbx, FP_SHIFT
+
+    cmp rax, 0
+    jl .hit_wall
+    cmp rax, MAP_WIDTH
+    jge .hit_wall
+    cmp rbx, 0
+    jl .hit_wall
+    cmp rbx, MAP_HEIGHT
     jge .hit_wall
 
-    ; index = y * MAP_WIDTH + x
-    mov rax, r9
-    imul rax, MAP_WIDTH
-    add rax, r8
+    mov rdx, rbx
+    imul rdx, MAP_WIDTH
+    add rdx, rax
 
     lea rsi, [rel map]
-    add rsi, rax
+    add rsi, rdx
 
     cmp byte [rsi], '#'
     je .hit_wall
@@ -690,7 +503,27 @@ cast_ray_for_column:
     jmp .ray_loop
 
 .hit_wall:
-    mov rax, r10
+    mov rax, rcx
+    ret
+
+; rax = any angle
+; returns rax wrapped to 0..15
+normalize_angle:
+.low_check:
+    cmp rax, 0
+    jge .high_check
+
+    add rax, 16
+    jmp .low_check
+
+.high_check:
+    cmp rax, 16
+    jl .done
+
+    sub rax, 16
+    jmp .high_check
+
+.done:
     ret
 
 exit_program:
