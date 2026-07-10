@@ -39,7 +39,8 @@ section .data
     clear_screen_len equ $ - clear_screen
 
     title db "asm-raycaster", 10
-        db "W/S = move | A/D = rotate | M = minimap | X = quit", 10, 10
+        db "W/S = move | A/D = rotate | M = minimap | X = quit", 10
+        db "Non-blocking terminal input enabled.", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
@@ -178,10 +179,14 @@ print_uint:
     ret
 
 read_input:
+    ; Clear input buffer first.
+    ; If read() times out, input_buf stays 0.
+    mov byte [rel input_buf], 0
+
     mov rax, 0              ; syscall: read
     mov rdi, 0              ; stdin
     lea rsi, [rel input_buf]
-    mov rdx, 1              ; read only one byte
+    mov rdx, 1              ; read one byte
     syscall
     ret
 
@@ -641,11 +646,13 @@ enable_raw_mode:
     ; raw_termios.c_lflag &= ~(ICANON | ECHO)
     and dword [rel raw_termios + TERMIOS_LFLAG], RAW_LFLAG_MASK
 
-    ; raw_termios.c_cc[VMIN] = 1
-    mov byte [rel raw_termios + TERMIOS_CC + VMIN_OFFSET], 1
+    ; raw_termios.c_cc[VMIN] = 0
+    ; read() can return even if no key was pressed.
+    mov byte [rel raw_termios + TERMIOS_CC + VMIN_OFFSET], 0
 
-    ; raw_termios.c_cc[VTIME] = 0
-    mov byte [rel raw_termios + TERMIOS_CC + VTIME_OFFSET], 0
+    ; raw_termios.c_cc[VTIME] = 1
+    ; wait up to 0.1 seconds for input.
+    mov byte [rel raw_termios + TERMIOS_CC + VTIME_OFFSET], 1
 
     ; ioctl(stdin, TCSETS, raw_termios)
     mov rax, SYS_IOCTL
