@@ -3,19 +3,28 @@ global _start
 %define MAP_WIDTH 16
 %define MAP_HEIGHT 8
 
+; Direction values:
+; 0 = north
+; 1 = east
+; 2 = south
+; 3 = west
+
 section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
 
-    title db "asm-raycaster - step 3: WASD movement", 10
-          db "Use W/A/S/D then ENTER to move. Press Q then ENTER to quit.", 10, 10
+    title db "asm-raycaster - step 4: player direction", 10
+          db "W/S = move forward/backward | A/D = rotate | X = quit", 10
+          db "Press a key, then ENTER.", 10, 10
     title_len equ $ - title
 
     newline db 10
-    player_char db "@"
+
+    dir_chars db "^>v<"
 
     player_x dq 4
     player_y dq 5
+    player_dir dq 1        ; start facing east
 
     map:
         db "################"
@@ -85,62 +94,158 @@ read_input:
 
 ; ----------------------------------------
 ; handle_input
-; Handles W/A/S/D movement and Q quit.
 ; ----------------------------------------
 handle_input:
     mov al, [rel input_buf]
 
-    cmp al, 'q'
+    cmp al, 'x'
     je exit_program
-    cmp al, 'Q'
+    cmp al, 'X'
     je exit_program
 
     cmp al, 'w'
-    je move_up
+    je move_forward
     cmp al, 'W'
-    je move_up
+    je move_forward
 
     cmp al, 's'
-    je move_down
+    je move_backward
     cmp al, 'S'
-    je move_down
+    je move_backward
 
     cmp al, 'a'
-    je move_left
+    je rotate_left
     cmp al, 'A'
-    je move_left
+    je rotate_left
 
     cmp al, 'd'
-    je move_right
+    je rotate_right
     cmp al, 'D'
-    je move_right
+    je rotate_right
 
     ret
 
-move_up:
-    mov rax, [rel player_x]
-    mov rbx, [rel player_y]
+; ----------------------------------------
+; rotate_left
+; direction = direction - 1
+; wraps from 0 to 3
+; ----------------------------------------
+rotate_left:
+    mov rax, [rel player_dir]
+
+    cmp rax, 0
+    jne .not_zero
+
+    mov rax, 3
+    jmp .store
+
+.not_zero:
+    dec rax
+
+.store:
+    mov [rel player_dir], rax
+    ret
+
+; ----------------------------------------
+; rotate_right
+; direction = direction + 1
+; wraps from 3 to 0
+; ----------------------------------------
+rotate_right:
+    mov rax, [rel player_dir]
+    inc rax
+
+    cmp rax, 4
+    jne .store
+
+    xor rax, rax
+
+.store:
+    mov [rel player_dir], rax
+    ret
+
+; ----------------------------------------
+; move_forward
+; Moves based on player_dir
+; ----------------------------------------
+move_forward:
+    mov rax, [rel player_x]     ; new x
+    mov rbx, [rel player_y]     ; new y
+    mov rcx, [rel player_dir]
+
+    cmp rcx, 0
+    je .north
+
+    cmp rcx, 1
+    je .east
+
+    cmp rcx, 2
+    je .south
+
+    cmp rcx, 3
+    je .west
+
+    ret
+
+.north:
     dec rbx
     call try_move
     ret
 
-move_down:
-    mov rax, [rel player_x]
-    mov rbx, [rel player_y]
+.east:
+    inc rax
+    call try_move
+    ret
+
+.south:
     inc rbx
     call try_move
     ret
 
-move_left:
-    mov rax, [rel player_x]
-    mov rbx, [rel player_y]
+.west:
     dec rax
     call try_move
     ret
 
-move_right:
-    mov rax, [rel player_x]
-    mov rbx, [rel player_y]
+; ----------------------------------------
+; move_backward
+; Moves opposite of player_dir
+; ----------------------------------------
+move_backward:
+    mov rax, [rel player_x]     ; new x
+    mov rbx, [rel player_y]     ; new y
+    mov rcx, [rel player_dir]
+
+    cmp rcx, 0
+    je .north
+
+    cmp rcx, 1
+    je .east
+
+    cmp rcx, 2
+    je .south
+
+    cmp rcx, 3
+    je .west
+
+    ret
+
+.north:
+    inc rbx
+    call try_move
+    ret
+
+.east:
+    dec rax
+    call try_move
+    ret
+
+.south:
+    dec rbx
+    call try_move
+    ret
+
+.west:
     inc rax
     call try_move
     ret
@@ -172,7 +277,7 @@ try_move:
 
 ; ----------------------------------------
 ; render_map
-; Draws map and player.
+; Draws map and player direction.
 ; ----------------------------------------
 render_map:
     xor r12, r12        ; y = 0
@@ -194,8 +299,11 @@ render_map:
     cmp r12, [rel player_y]
     jne .print_map_tile
 
-    ; Print player
-    lea rsi, [rel player_char]
+    ; Print player direction character
+    mov rax, [rel player_dir]
+    lea rsi, [rel dir_chars]
+    add rsi, rax
+
     mov rdx, 1
     call print
     jmp .next_tile
