@@ -13,18 +13,23 @@ section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
 
-    title db "asm-raycaster - step 4: player direction", 10
+    title db "asm-raycaster - step 5: single ray cast", 10
           db "W/S = move forward/backward | A/D = rotate | X = quit", 10
+          db "The * shows where the ray hits a wall.", 10
           db "Press a key, then ENTER.", 10, 10
     title_len equ $ - title
 
     newline db 10
 
     dir_chars db "^>v<"
+    hit_char db "*"
 
     player_x dq 4
     player_y dq 5
     player_dir dq 1        ; start facing east
+
+    ray_hit_x dq 0
+    ray_hit_y dq 0
 
     map:
         db "################"
@@ -43,6 +48,7 @@ section .text
 
 _start:
 .game_loop:
+    call cast_single_ray
     call clear_terminal
     call print_title
     call render_map
@@ -127,8 +133,6 @@ handle_input:
 
 ; ----------------------------------------
 ; rotate_left
-; direction = direction - 1
-; wraps from 0 to 3
 ; ----------------------------------------
 rotate_left:
     mov rax, [rel player_dir]
@@ -148,8 +152,6 @@ rotate_left:
 
 ; ----------------------------------------
 ; rotate_right
-; direction = direction + 1
-; wraps from 3 to 0
 ; ----------------------------------------
 rotate_right:
     mov rax, [rel player_dir]
@@ -166,22 +168,18 @@ rotate_right:
 
 ; ----------------------------------------
 ; move_forward
-; Moves based on player_dir
 ; ----------------------------------------
 move_forward:
-    mov rax, [rel player_x]     ; new x
-    mov rbx, [rel player_y]     ; new y
+    mov rax, [rel player_x]
+    mov rbx, [rel player_y]
     mov rcx, [rel player_dir]
 
     cmp rcx, 0
     je .north
-
     cmp rcx, 1
     je .east
-
     cmp rcx, 2
     je .south
-
     cmp rcx, 3
     je .west
 
@@ -209,22 +207,18 @@ move_forward:
 
 ; ----------------------------------------
 ; move_backward
-; Moves opposite of player_dir
 ; ----------------------------------------
 move_backward:
-    mov rax, [rel player_x]     ; new x
-    mov rbx, [rel player_y]     ; new y
+    mov rax, [rel player_x]
+    mov rbx, [rel player_y]
     mov rcx, [rel player_dir]
 
     cmp rcx, 0
     je .north
-
     cmp rcx, 1
     je .east
-
     cmp rcx, 2
     je .south
-
     cmp rcx, 3
     je .west
 
@@ -254,11 +248,8 @@ move_backward:
 ; try_move
 ; rax = new x
 ; rbx = new y
-; Checks collision. If target is not '#',
-; updates player position.
 ; ----------------------------------------
 try_move:
-    ; index = y * MAP_WIDTH + x
     mov rcx, rbx
     imul rcx, MAP_WIDTH
     add rcx, rax
@@ -276,8 +267,69 @@ try_move:
     ret
 
 ; ----------------------------------------
+; cast_single_ray
+; Shoots one ray from the player in the
+; current direction until it hits '#'.
+; Stores hit position in ray_hit_x/y.
+; ----------------------------------------
+cast_single_ray:
+    mov r8, [rel player_x]      ; ray x
+    mov r9, [rel player_y]      ; ray y
+    mov rcx, [rel player_dir]   ; direction
+
+.ray_loop:
+    cmp rcx, 0
+    je .north
+
+    cmp rcx, 1
+    je .east
+
+    cmp rcx, 2
+    je .south
+
+    cmp rcx, 3
+    je .west
+
+    ret
+
+.north:
+    dec r9
+    jmp .check_tile
+
+.east:
+    inc r8
+    jmp .check_tile
+
+.south:
+    inc r9
+    jmp .check_tile
+
+.west:
+    dec r8
+    jmp .check_tile
+
+.check_tile:
+    ; index = y * MAP_WIDTH + x
+    mov rax, r9
+    imul rax, MAP_WIDTH
+    add rax, r8
+
+    lea rsi, [rel map]
+    add rsi, rax
+
+    cmp byte [rsi], '#'
+    je .hit_wall
+
+    jmp .ray_loop
+
+.hit_wall:
+    mov [rel ray_hit_x], r8
+    mov [rel ray_hit_y], r9
+    ret
+
+; ----------------------------------------
 ; render_map
-; Draws map and player direction.
+; Draws map, player direction, and ray hit.
 ; ----------------------------------------
 render_map:
     xor r12, r12        ; y = 0
@@ -294,16 +346,29 @@ render_map:
 
     ; Is this the player position?
     cmp r13, [rel player_x]
-    jne .print_map_tile
+    jne .check_ray_hit
 
     cmp r12, [rel player_y]
-    jne .print_map_tile
+    jne .check_ray_hit
 
     ; Print player direction character
     mov rax, [rel player_dir]
     lea rsi, [rel dir_chars]
     add rsi, rax
 
+    mov rdx, 1
+    call print
+    jmp .next_tile
+
+.check_ray_hit:
+    ; Is this the ray hit position?
+    cmp r13, [rel ray_hit_x]
+    jne .print_map_tile
+
+    cmp r12, [rel ray_hit_y]
+    jne .print_map_tile
+
+    lea rsi, [rel hit_char]
     mov rdx, 1
     call print
     jmp .next_tile
@@ -336,6 +401,6 @@ render_map:
     ret
 
 exit_program:
-    mov rax, 60     ; syscall: exit
+    mov rax, 60
     mov rdi, 0
     syscall
