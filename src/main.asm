@@ -21,6 +21,9 @@ global _start
 %define VTIME_OFFSET 5
 %define VMIN_OFFSET 6
 
+%define VIEW_STRIDE (VIEW_WIDTH + 1)
+%define VIEW_BUFFER_SIZE (VIEW_STRIDE * VIEW_HEIGHT)
+
 ; Clears ICANON and ECHO flags.
 ; ICANON = 0x00000002
 ; ECHO   = 0x00000008
@@ -98,6 +101,8 @@ section .bss
 
     old_termios resb TERMIOS_SIZE
     raw_termios resb TERMIOS_SIZE
+    
+    view_buffer resb VIEW_BUFFER_SIZE
 
 section .text
 
@@ -392,69 +397,76 @@ render_map:
 .done:
     ret
 
+; ----------------------------------------
+; render_3d_view
+; Builds the whole 3D view in memory first,
+; then prints it with one write syscall.
+; ----------------------------------------
 render_3d_view:
-    ; lea rsi, [rel view_label]
-    ; mov rdx, view_label_len
-    ; call print
-
-    xor r12, r12
+    lea r14, [rel view_buffer]      ; current buffer position
+    xor r12, r12                    ; y = 0
 
 .y_loop:
     cmp r12, VIEW_HEIGHT
-    jge .done
+    jge .print_buffer
 
-    xor r13, r13
+    xor r13, r13                    ; x = 0
 
 .x_loop:
     cmp r13, VIEW_WIDTH
-    jge .print_newline
+    jge .end_line
 
+    ; Calculate wall slice for this screen column.
     mov rdi, r13
     call calculate_wall_for_column
+    ; returns:
+    ; rax = wall_start_y
+    ; rbx = wall_end_y
+    ; rdx = ray distance
 
+    ; Is current y inside the wall slice?
     cmp r12, rax
     jb .print_empty
 
     cmp r12, rbx
     jae .print_empty
 
-    ; Choose wall character based on ray distance.
-    ; calculate_wall_for_column returned distance in rdx.
+    ; Choose wall shade based on distance.
     mov rdi, rdx
     call get_wall_shade
-
-    mov rdx, 1
-    call print
+    mov al, [rsi]
+    mov [r14], al
     jmp .next_col
 
 .print_empty:
-    ; Draw ceiling on upper half, floor on lower half.
+    ; Ceiling on upper half, floor on lower half.
     cmp r12, VIEW_HEIGHT / 2
     jb .print_ceiling
 
-    lea rsi, [rel floor_char]
-    mov rdx, 1
-    call print
+    mov al, [rel floor_char]
+    mov [r14], al
     jmp .next_col
 
 .print_ceiling:
-    lea rsi, [rel ceiling_char]
-    mov rdx, 1
-    call print
+    mov al, [rel ceiling_char]
+    mov [r14], al
 
 .next_col:
+    inc r14
     inc r13
     jmp .x_loop
 
-.print_newline:
-    lea rsi, [rel newline]
-    mov rdx, 1
-    call print
+.end_line:
+    mov byte [r14], 10              ; newline
+    inc r14
 
     inc r12
     jmp .y_loop
 
-.done:
+.print_buffer:
+    lea rsi, [rel view_buffer]
+    mov rdx, VIEW_BUFFER_SIZE
+    call print
     ret
 
 ; rdi = screen column
