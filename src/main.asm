@@ -51,8 +51,23 @@ section .data
     view_label db 10, "3D raycast view:", 10
     view_label_len equ $ - view_label
 
-    angle_label db 10, "Player angle index: "
-    angle_label_len equ $ - angle_label
+    hud_label db 10, "HUD | x="
+    hud_label_len equ $ - hud_label
+
+    hud_y_label db " y="
+    hud_y_label_len equ $ - hud_y_label
+
+    hud_angle_label db " angle="
+    hud_angle_label_len equ $ - hud_angle_label
+
+    hud_minimap_label db " minimap="
+    hud_minimap_label_len equ $ - hud_minimap_label
+
+    hud_on db "on"
+    hud_on_len equ $ - hud_on
+
+    hud_off db "off"
+    hud_off_len equ $ - hud_off
 
     newline db 10
 
@@ -150,14 +165,63 @@ print:
     syscall
     ret
 
+; ----------------------------------------
+; print_status
+; Prints a simple HUD with player position,
+; angle, and minimap state.
+; ----------------------------------------
 print_status:
-    lea rsi, [rel angle_label]
-    mov rdx, angle_label_len
+    ; HUD | x=
+    lea rsi, [rel hud_label]
+    mov rdx, hud_label_len
     call print
 
+    ; print player x tile
+    mov rax, [rel player_x_fp]
+    sar rax, FP_SHIFT
+    call print_uint
+
+    ; y=
+    lea rsi, [rel hud_y_label]
+    mov rdx, hud_y_label_len
+    call print
+
+    ; print player y tile
+    mov rax, [rel player_y_fp]
+    sar rax, FP_SHIFT
+    call print_uint
+
+    ; angle=
+    lea rsi, [rel hud_angle_label]
+    mov rdx, hud_angle_label_len
+    call print
+
+    ; print player angle
     mov rax, [rel player_angle]
     call print_uint
 
+    ; minimap=
+    lea rsi, [rel hud_minimap_label]
+    mov rdx, hud_minimap_label_len
+    call print
+
+    ; print on/off
+    mov al, [rel show_minimap]
+    cmp al, 1
+    je .minimap_on
+
+.minimap_off:
+    lea rsi, [rel hud_off]
+    mov rdx, hud_off_len
+    call print
+    jmp .done
+
+.minimap_on:
+    lea rsi, [rel hud_on]
+    mov rdx, hud_on_len
+    call print
+
+.done:
     lea rsi, [rel newline]
     mov rdx, 1
     call print
