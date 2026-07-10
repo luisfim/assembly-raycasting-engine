@@ -1,17 +1,17 @@
 global _start
 
-%define MAP_WIDTH 16
-%define MAP_HEIGHT 8
+%define MAP_WIDTH 24
+%define MAP_HEIGHT 12
 
-%define VIEW_WIDTH 63
-%define VIEW_HEIGHT 24
-%define VIEW_CENTER 31
-%define ANGLE_COLUMN_SCALE 8
+%define VIEW_WIDTH 79
+%define VIEW_HEIGHT 28
+%define VIEW_CENTER 39
+%define ANGLE_COLUMN_SCALE 12
 
 %define FP_SHIFT 10
-%define MAX_RAY_STEPS 128
+%define MAX_RAY_STEPS 160
 
-%define MAX_CELL_BYTES 16
+%define MAX_CELL_BYTES 32
 %define VIEW_STRIDE_BYTES ((VIEW_WIDTH * MAX_CELL_BYTES) + 1)
 %define VIEW_BUFFER_SIZE (VIEW_STRIDE_BYTES * VIEW_HEIGHT)
 
@@ -54,7 +54,7 @@ section .data
 
     title db "asm-raycaster", 10
           db "W/S = move | A/D = rotate | E = interact | M = minimap | X = quit", 10
-          db "Unicode wall shading + frame buffer enabled.", 10, 10
+          db "Brown walls + larger map + Unicode terminal rendering.", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
@@ -82,22 +82,26 @@ section .data
 
     dir_chars db ">v<^"
 
-        color_reset db 27, "[0m"
+    ; ANSI colors.
+    color_reset db 27, "[0m"
     color_reset_len equ $ - color_reset
 
-    color_wall_near db 27, "[97m"     ; bright white
+    ; Brown / amber wall palette.
+    color_wall_near db 27, "[38;5;130m"
     color_wall_near_len equ $ - color_wall_near
 
-    color_wall_mid db 27, "[37m"      ; white/gray
+    color_wall_mid db 27, "[38;5;94m"
     color_wall_mid_len equ $ - color_wall_mid
 
-    color_wall_far db 27, "[90m"      ; dark gray
+    color_wall_far db 27, "[38;5;58m"
     color_wall_far_len equ $ - color_wall_far
 
-    color_door db 27, "[33m"          ; yellow
+    ; Orange doors.
+    color_door db 27, "[38;5;214m"
     color_door_len equ $ - color_door
 
-    color_floor db 27, "[90m"         ; dark gray
+    ; Dark gray floor.
+    color_floor db 27, "[38;5;240m"
     color_floor_len equ $ - color_floor
 
     ; Unicode wall shades.
@@ -153,23 +157,30 @@ section .data
 
     ; Fixed-point position.
     ; 1024 = 1 tile.
-    player_x_fp dq 2560     ; x = 2.5 tiles
-    player_y_fp dq 6656     ; y = 6.5 tiles
+    ; Start at x = 2.5, y = 9.5.
+    player_x_fp dq 2560
+    player_y_fp dq 9728
     player_angle dq 0       ; facing east
 
     show_minimap db 0
     ray_side db 0
     ray_tile db 0
 
+    ; Bigger 24x12 map.
+    ; Each row must have exactly 24 characters.
     map:
-        db "################"
-        db "#      #       #"
-        db "# ####D# ##### #"
-        db "# #    #     # #"
-        db "# # ####### #  #"
-        db "# #         #  #"
-        db "#     ###      #"
-        db "################"
+        db "########################"
+        db "#          #           #"
+        db "#   ####   #   ####    #"
+        db "#      #       #       #"
+        db "####   #####D###   #####"
+        db "#              #       #"
+        db "#   #######    #   ##  #"
+        db "#   #          #       #"
+        db "#   #   ###########    #"
+        db "#                      #"
+        db "#      ####            #"
+        db "########################"
 
     ; 16 direction vectors, scaled by 1024.
     dir_dx dd 1024, 946, 724, 392, 0, -392, -724, -946
@@ -203,83 +214,53 @@ _start:
     call render_3d_view
     call print_status
     call render_minimap_if_enabled
+    call clear_remaining_screen
     call read_input
     call handle_input
     jmp .game_loop
 
-; ----------------------------------------
-; clear_terminal
-; ----------------------------------------
 clear_terminal:
     lea rsi, [rel clear_screen]
     mov rdx, clear_screen_len
     call print
     ret
 
-; ----------------------------------------
-; move_cursor_home
-; Moves cursor to top-left without clearing
-; the whole screen.
-; ----------------------------------------
 move_cursor_home:
     lea rsi, [rel cursor_home]
     mov rdx, cursor_home_len
     call print
     ret
 
-; ----------------------------------------
-; clear_remaining_screen
-; Clears everything below the current cursor.
-; Useful when minimap is toggled off.
-; ----------------------------------------
 clear_remaining_screen:
     lea rsi, [rel clear_to_end]
     mov rdx, clear_to_end_len
     call print
     ret
 
-; ----------------------------------------
-; hide_terminal_cursor
-; ----------------------------------------
 hide_terminal_cursor:
     lea rsi, [rel hide_cursor]
     mov rdx, hide_cursor_len
     call print
     ret
 
-; ----------------------------------------
-; show_terminal_cursor
-; ----------------------------------------
 show_terminal_cursor:
     lea rsi, [rel show_cursor]
     mov rdx, show_cursor_len
     call print
     ret
 
-; ----------------------------------------
-; print_title
-; ----------------------------------------
 print_title:
     lea rsi, [rel title]
     mov rdx, title_len
     call print
     ret
 
-; ----------------------------------------
-; print
-; rsi = buffer address
-; rdx = buffer length
-; ----------------------------------------
 print:
     mov rax, 1
     mov rdi, 1
     syscall
     ret
 
-; ----------------------------------------
-; print_uint
-; rax = unsigned integer
-; ----------------------------------------
 print_uint:
     cmp rax, 0
     jne .convert
@@ -314,10 +295,6 @@ print_uint:
     call print
     ret
 
-; ----------------------------------------
-; read_input
-; Non-blocking-ish input using raw terminal mode.
-; ----------------------------------------
 read_input:
     mov byte [rel input_buf], 0
 
@@ -328,9 +305,6 @@ read_input:
     syscall
     ret
 
-; ----------------------------------------
-; handle_input
-; ----------------------------------------
 handle_input:
     mov al, [rel input_buf]
 
@@ -371,9 +345,6 @@ handle_input:
 
     ret
 
-; ----------------------------------------
-; rotate_left
-; ----------------------------------------
 rotate_left:
     mov rax, [rel player_angle]
 
@@ -390,9 +361,6 @@ rotate_left:
     mov [rel player_angle], rax
     ret
 
-; ----------------------------------------
-; rotate_right
-; ----------------------------------------
 rotate_right:
     mov rax, [rel player_angle]
     inc rax
@@ -406,14 +374,10 @@ rotate_right:
     mov [rel player_angle], rax
     ret
 
-; ----------------------------------------
-; move_forward
-; ----------------------------------------
 move_forward:
     mov rcx, [rel player_angle]
     call get_direction_vector
 
-    ; movement speed = half tile
     sar r10, 1
     sar r11, 1
 
@@ -424,14 +388,10 @@ move_forward:
     call try_move_fp
     ret
 
-; ----------------------------------------
-; move_backward
-; ----------------------------------------
 move_backward:
     mov rcx, [rel player_angle]
     call get_direction_vector
 
-    ; movement speed = half tile
     sar r10, 1
     sar r11, 1
 
@@ -442,13 +402,6 @@ move_backward:
     call try_move_fp
     ret
 
-; ----------------------------------------
-; get_direction_vector
-; rcx = angle index
-; returns:
-; r10 = dx
-; r11 = dy
-; ----------------------------------------
 get_direction_vector:
     lea rsi, [rel dir_dx]
     movsxd r10, dword [rsi + rcx * 4]
@@ -457,11 +410,6 @@ get_direction_vector:
     movsxd r11, dword [rsi + rcx * 4]
     ret
 
-; ----------------------------------------
-; try_move_fp
-; rax = new x fixed-point
-; rbx = new y fixed-point
-; ----------------------------------------
 try_move_fp:
     mov r8, rax
     sar r8, FP_SHIFT
@@ -497,11 +445,6 @@ try_move_fp:
 .blocked:
     ret
 
-; ----------------------------------------
-; render_3d_view
-; Builds the whole first-person view in memory,
-; then prints it with one write syscall.
-; ----------------------------------------
 render_3d_view:
     lea r14, [rel view_buffer]
     xor r12, r12
@@ -518,10 +461,6 @@ render_3d_view:
 
     mov rdi, r13
     call calculate_wall_for_column
-    ; returns:
-    ; rax = wall_start_y
-    ; rbx = wall_end_y
-    ; rdx = ray distance
 
     cmp r12, rax
     jb .empty_cell
@@ -529,18 +468,14 @@ render_3d_view:
     cmp r12, rbx
     jae .empty_cell
 
-    ; Save ray distance
     mov r15, rdx
 
-    ; Get wall color
     mov rdi, r15
     call get_wall_color
 
-    ; Get wall shade character
     mov rdi, r15
     call get_wall_shade
 
-    ; Copy colored wall cell to frame buffer
     call copy_colored_to_frame
     jmp .next_col
 
@@ -554,7 +489,6 @@ render_3d_view:
     lea rsi, [rel floor_char]
     mov rdx, 1
     call copy_colored_to_frame
-
     jmp .next_col
 
 .ceiling_cell:
@@ -580,14 +514,6 @@ render_3d_view:
     call print
     ret
 
-; ----------------------------------------
-; copy_colored_to_frame
-; r8  = color address
-; r9  = color byte length
-; rsi = character address
-; rdx = character byte length
-; r14 = destination pointer
-; ----------------------------------------
 copy_colored_to_frame:
     push rsi
     push rdx
@@ -606,12 +532,6 @@ copy_colored_to_frame:
 
     ret
 
-; ----------------------------------------
-; copy_to_frame
-; rsi = source address
-; rdx = byte length
-; r14 = destination pointer
-; ----------------------------------------
 copy_to_frame:
 .copy_loop:
     cmp rdx, 0
@@ -629,14 +549,6 @@ copy_to_frame:
 .done:
     ret
 
-; ----------------------------------------
-; calculate_wall_for_column
-; rdi = screen column
-; returns:
-; rax = wall_start_y
-; rbx = wall_end_y
-; rdx = ray distance
-; ----------------------------------------
 calculate_wall_for_column:
     call cast_ray_for_column
 
@@ -649,7 +561,6 @@ calculate_wall_for_column:
     mov rbx, 1
 
 .distance_ok:
-    ; wall height = (VIEW_HEIGHT * 8) / distance
     mov rax, VIEW_HEIGHT * 8
     xor rdx, rdx
     div rbx
@@ -677,15 +588,7 @@ calculate_wall_for_column:
     mov rdx, r8
     ret
 
-; ----------------------------------------
-; cast_ray_for_column
-; rdi = screen column
-; returns:
-; rax = ray distance
-; also updates ray_tile and ray_side
-; ----------------------------------------
 cast_ray_for_column:
-    ; angle_offset = (column - VIEW_CENTER) / ANGLE_COLUMN_SCALE
     mov rax, rdi
     sub rax, VIEW_CENTER
     cqo
@@ -699,7 +602,6 @@ cast_ray_for_column:
     mov rcx, rax
     call get_direction_vector
 
-    ; ray step = direction / 4
     sar r10, 2
     sar r11, 2
 
@@ -707,7 +609,6 @@ cast_ray_for_column:
     mov r9, [rel player_y_fp]
     xor rcx, rcx
 
-    ; Store starting tile as previous tile.
     mov rax, r8
     sar rax, FP_SHIFT
     mov [rel prev_tile_x], rax
@@ -730,7 +631,6 @@ cast_ray_for_column:
     mov rbx, r9
     sar rbx, FP_SHIFT
 
-    ; Detect wall side approximation.
     mov rdx, [rel prev_tile_x]
     cmp rax, rdx
     jne .x_side_hit
@@ -786,13 +686,6 @@ cast_ray_for_column:
     mov rax, rcx
     ret
 
-; ----------------------------------------
-; get_wall_color
-; rdi = ray distance
-; returns:
-; r8 = color address
-; r9 = color byte length
-; ----------------------------------------
 get_wall_color:
     mov al, [rel ray_tile]
     cmp al, 'D'
@@ -823,13 +716,6 @@ get_wall_color:
     mov r9, color_door_len
     ret
 
-; ----------------------------------------
-; get_wall_shade
-; rdi = ray distance
-; returns:
-; rsi = shade address
-; rdx = shade byte length
-; ----------------------------------------
 get_wall_shade:
     mov al, [rel ray_tile]
     cmp al, 'D'
@@ -950,11 +836,6 @@ get_wall_shade:
     mov rdx, door_far_len
     ret
 
-; ----------------------------------------
-; normalize_angle
-; rax = angle
-; returns 0..15
-; ----------------------------------------
 normalize_angle:
 .low_check:
     cmp rax, 0
@@ -973,10 +854,6 @@ normalize_angle:
 .done:
     ret
 
-; ----------------------------------------
-; render_map
-; Debug minimap.
-; ----------------------------------------
 render_map:
     lea rsi, [rel map_label]
     mov rdx, map_label_len
@@ -1040,9 +917,6 @@ render_map:
 .done:
     ret
 
-; ----------------------------------------
-; render_minimap_if_enabled
-; ----------------------------------------
 render_minimap_if_enabled:
     mov al, [rel show_minimap]
     cmp al, 1
@@ -1057,9 +931,6 @@ render_minimap_if_enabled:
 .skip:
     ret
 
-; ----------------------------------------
-; toggle_minimap
-; ----------------------------------------
 toggle_minimap:
     mov al, [rel show_minimap]
 
@@ -1073,11 +944,6 @@ toggle_minimap:
     mov byte [rel show_minimap], 1
     ret
 
-; ----------------------------------------
-; interact_door
-; Opens a door directly in front of player.
-; D becomes empty space.
-; ----------------------------------------
 interact_door:
     mov rcx, [rel player_angle]
     call get_direction_vector
@@ -1115,9 +981,6 @@ interact_door:
 .done:
     ret
 
-; ----------------------------------------
-; print_status
-; ----------------------------------------
 print_status:
     lea rsi, [rel hud_label]
     mov rdx, hud_label_len
@@ -1167,36 +1030,23 @@ print_status:
     call print
     ret
 
-; ----------------------------------------
-; enable_raw_mode
-; Disables canonical input and echo.
-; Allows reading one key without Enter.
-; ----------------------------------------
 enable_raw_mode:
-    ; ioctl(stdin, TCGETS, old_termios)
     mov rax, SYS_IOCTL
     mov rdi, 0
     mov rsi, TCGETS
     lea rdx, [rel old_termios]
     syscall
 
-    ; copy old_termios to raw_termios
     lea rsi, [rel old_termios]
     lea rdi, [rel raw_termios]
     mov rcx, TERMIOS_SIZE
     rep movsb
 
-    ; raw_termios.c_lflag &= ~(ICANON | ECHO)
     and dword [rel raw_termios + TERMIOS_LFLAG], RAW_LFLAG_MASK
 
-    ; raw_termios.c_cc[VMIN] = 0
     mov byte [rel raw_termios + TERMIOS_CC + VMIN_OFFSET], 0
-
-    ; raw_termios.c_cc[VTIME] = 1
-    ; Wait up to 0.1 seconds for input.
     mov byte [rel raw_termios + TERMIOS_CC + VTIME_OFFSET], 1
 
-    ; ioctl(stdin, TCSETS, raw_termios)
     mov rax, SYS_IOCTL
     mov rdi, 0
     mov rsi, TCSETS
@@ -1205,9 +1055,6 @@ enable_raw_mode:
 
     ret
 
-; ----------------------------------------
-; restore_terminal
-; ----------------------------------------
 restore_terminal:
     mov rax, SYS_IOCTL
     mov rdi, 0
@@ -1216,9 +1063,6 @@ restore_terminal:
     syscall
     ret
 
-; ----------------------------------------
-; exit_program
-; ----------------------------------------
 exit_program:
     call show_terminal_cursor
     call restore_terminal
