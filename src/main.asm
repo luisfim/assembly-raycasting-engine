@@ -3,6 +3,10 @@ global _start
 %define MAP_WIDTH 16
 %define MAP_HEIGHT 8
 
+%define VIEW_WIDTH 31
+%define VIEW_HEIGHT 12
+%define VIEW_CENTER 15
+
 ; Direction values:
 ; 0 = north
 ; 1 = east
@@ -13,27 +17,36 @@ section .data
     clear_screen db 27, "[2J", 27, "[H"
     clear_screen_len equ $ - clear_screen
 
-    title db "asm-raycaster - step 6: ray distance", 10
+    title db "asm-raycaster - step 7: first 3D wall slice", 10
           db "W/S = move forward/backward | A/D = rotate | X = quit", 10
-          db "The * shows where the ray hits a wall.", 10
+          db "The 3D preview uses ray distance to draw wall height.", 10
           db "Press a key, then ENTER.", 10, 10
     title_len equ $ - title
 
-    distance_label db "Ray distance to wall: "
+    view_label db 10, "Single-ray 3D preview:", 10
+    view_label_len equ $ - view_label
+
+    distance_label db 10, "Ray distance to wall: "
     distance_label_len equ $ - distance_label
 
     newline db 10
 
     dir_chars db "^>v<"
     hit_char db "*"
+    wall_char db "#"
+    empty_char db "."
 
     player_x dq 4
     player_y dq 5
-    player_dir dq 1        ; start facing east
+    player_dir dq 1
 
     ray_hit_x dq 0
     ray_hit_y dq 0
     ray_dist dq 0
+
+    wall_height dq 0
+    wall_start_y dq 0
+    wall_end_y dq 0
 
     map:
         db "################"
@@ -54,36 +67,36 @@ section .text
 _start:
 .game_loop:
     call cast_single_ray
+    call calculate_wall_slice
+
     call clear_terminal
     call print_title
     call render_map
+    call render_3d_view
     call print_status
+
     call read_input
     call handle_input
     jmp .game_loop
 
-; ----------------------------------------
-; clear_terminal
-; ----------------------------------------
 clear_terminal:
     lea rsi, [rel clear_screen]
     mov rdx, clear_screen_len
     call print
     ret
 
-; ----------------------------------------
-; print_title
-; ----------------------------------------
 print_title:
     lea rsi, [rel title]
     mov rdx, title_len
     call print
     ret
 
-; ----------------------------------------
-; print_status
-; Prints ray distance.
-; ----------------------------------------
+print:
+    mov rax, 1
+    mov rdi, 1
+    syscall
+    ret
+
 print_status:
     lea rsi, [rel distance_label]
     mov rdx, distance_label_len
@@ -95,24 +108,8 @@ print_status:
     lea rsi, [rel newline]
     mov rdx, 1
     call print
-
     ret
 
-; ----------------------------------------
-; print
-; rsi = buffer address
-; rdx = buffer length
-; ----------------------------------------
-print:
-    mov rax, 1      ; syscall: write
-    mov rdi, 1      ; stdout
-    syscall
-    ret
-
-; ----------------------------------------
-; print_uint
-; rax = unsigned integer to print
-; ----------------------------------------
 print_uint:
     cmp rax, 0
     jne .convert
@@ -132,7 +129,7 @@ print_uint:
 
 .convert_loop:
     xor rdx, rdx
-    div rbx                 ; rax = quotient, rdx = remainder
+    div rbx
 
     dec rsi
     add dl, '0'
@@ -147,22 +144,14 @@ print_uint:
     call print
     ret
 
-; ----------------------------------------
-; read_input
-; Reads keyboard input from stdin.
-; In normal terminal mode, user must press ENTER.
-; ----------------------------------------
 read_input:
-    mov rax, 0              ; syscall: read
-    mov rdi, 0              ; stdin
+    mov rax, 0
+    mov rdi, 0
     lea rsi, [rel input_buf]
     mov rdx, 8
     syscall
     ret
 
-; ----------------------------------------
-; handle_input
-; ----------------------------------------
 handle_input:
     mov al, [rel input_buf]
 
@@ -193,9 +182,6 @@ handle_input:
 
     ret
 
-; ----------------------------------------
-; rotate_left
-; ----------------------------------------
 rotate_left:
     mov rax, [rel player_dir]
 
@@ -212,9 +198,6 @@ rotate_left:
     mov [rel player_dir], rax
     ret
 
-; ----------------------------------------
-; rotate_right
-; ----------------------------------------
 rotate_right:
     mov rax, [rel player_dir]
     inc rax
@@ -228,9 +211,6 @@ rotate_right:
     mov [rel player_dir], rax
     ret
 
-; ----------------------------------------
-; move_forward
-; ----------------------------------------
 move_forward:
     mov rax, [rel player_x]
     mov rbx, [rel player_y]
@@ -267,9 +247,6 @@ move_forward:
     call try_move
     ret
 
-; ----------------------------------------
-; move_backward
-; ----------------------------------------
 move_backward:
     mov rax, [rel player_x]
     mov rbx, [rel player_y]
@@ -306,11 +283,6 @@ move_backward:
     call try_move
     ret
 
-; ----------------------------------------
-; try_move
-; rax = new x
-; rbx = new y
-; ----------------------------------------
 try_move:
     mov rcx, rbx
     imul rcx, MAP_WIDTH
@@ -328,31 +300,21 @@ try_move:
 .blocked:
     ret
 
-; ----------------------------------------
-; cast_single_ray
-; Shoots one ray from the player in the
-; current direction until it hits '#'.
-; Stores hit position and distance.
-; ----------------------------------------
 cast_single_ray:
-    mov r8, [rel player_x]      ; ray x
-    mov r9, [rel player_y]      ; ray y
-    mov rcx, [rel player_dir]   ; direction
-    xor r10, r10                ; distance counter
+    mov r8, [rel player_x]
+    mov r9, [rel player_y]
+    mov rcx, [rel player_dir]
+    xor r10, r10
 
 .ray_loop:
     cmp rcx, 0
     je .north
-
     cmp rcx, 1
     je .east
-
     cmp rcx, 2
     je .south
-
     cmp rcx, 3
     je .west
-
     ret
 
 .north:
@@ -376,7 +338,6 @@ cast_single_ray:
     jmp .check_tile
 
 .check_tile:
-    ; index = y * MAP_WIDTH + x
     mov rax, r9
     imul rax, MAP_WIDTH
     add rax, r8
@@ -395,31 +356,61 @@ cast_single_ray:
     mov [rel ray_dist], r10
     ret
 
-; ----------------------------------------
-; render_map
-; Draws map, player direction, and ray hit.
-; ----------------------------------------
+calculate_wall_slice:
+    ; wall_height = VIEW_HEIGHT / ray_dist
+    mov rax, VIEW_HEIGHT
+    xor rdx, rdx
+
+    mov rbx, [rel ray_dist]
+    cmp rbx, 0
+    jne .divide
+
+    mov rbx, 1
+
+.divide:
+    div rbx
+
+    ; minimum wall height = 1
+    cmp rax, 1
+    jge .height_ok
+
+    mov rax, 1
+
+.height_ok:
+    mov [rel wall_height], rax
+
+    ; wall_start_y = (VIEW_HEIGHT - wall_height) / 2
+    mov rcx, VIEW_HEIGHT
+    sub rcx, rax
+    shr rcx, 1
+
+    mov [rel wall_start_y], rcx
+
+    ; wall_end_y = wall_start_y + wall_height
+    add rax, rcx
+    mov [rel wall_end_y], rax
+
+    ret
+
 render_map:
-    xor r12, r12        ; y = 0
+    xor r12, r12
 
 .y_loop:
     cmp r12, MAP_HEIGHT
     jge .done
 
-    xor r13, r13        ; x = 0
+    xor r13, r13
 
 .x_loop:
     cmp r13, MAP_WIDTH
     jge .print_newline
 
-    ; Is this the player position?
     cmp r13, [rel player_x]
     jne .check_ray_hit
 
     cmp r12, [rel player_y]
     jne .check_ray_hit
 
-    ; Print player direction character
     mov rax, [rel player_dir]
     lea rsi, [rel dir_chars]
     add rsi, rax
@@ -429,7 +420,6 @@ render_map:
     jmp .next_tile
 
 .check_ray_hit:
-    ; Is this the ray hit position?
     cmp r13, [rel ray_hit_x]
     jne .print_map_tile
 
@@ -442,7 +432,6 @@ render_map:
     jmp .next_tile
 
 .print_map_tile:
-    ; index = y * MAP_WIDTH + x
     mov rax, r12
     imul rax, MAP_WIDTH
     add rax, r13
@@ -454,6 +443,59 @@ render_map:
     call print
 
 .next_tile:
+    inc r13
+    jmp .x_loop
+
+.print_newline:
+    lea rsi, [rel newline]
+    mov rdx, 1
+    call print
+
+    inc r12
+    jmp .y_loop
+
+.done:
+    ret
+
+render_3d_view:
+    lea rsi, [rel view_label]
+    mov rdx, view_label_len
+    call print
+
+    xor r12, r12        ; y = 0
+
+.y_loop:
+    cmp r12, VIEW_HEIGHT
+    jge .done
+
+    xor r13, r13        ; x = 0
+
+.x_loop:
+    cmp r13, VIEW_WIDTH
+    jge .print_newline
+
+    ; Only draw the center column for now.
+    cmp r13, VIEW_CENTER
+    jne .print_empty
+
+    ; Is y inside wall_start_y <= y < wall_end_y?
+    cmp r12, [rel wall_start_y]
+    jb .print_empty
+
+    cmp r12, [rel wall_end_y]
+    jae .print_empty
+
+    lea rsi, [rel wall_char]
+    mov rdx, 1
+    call print
+    jmp .next_col
+
+.print_empty:
+    lea rsi, [rel empty_char]
+    mov rdx, 1
+    call print
+
+.next_col:
     inc r13
     jmp .x_loop
 
