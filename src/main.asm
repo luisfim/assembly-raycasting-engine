@@ -42,8 +42,7 @@ section .data
     clear_screen_len equ $ - clear_screen
 
     title db "asm-raycaster", 10
-        db "W/S = move | A/D = rotate | M = minimap | X = quit", 10
-        db "Non-blocking terminal input enabled.", 10, 10
+        db "W/S = move | A/D = rotate | E = interact | M = minimap | X = quit", 10, 10
     title_len equ $ - title
 
     map_label db "2D map:", 10
@@ -70,6 +69,11 @@ section .data
     side_mid db ":"
     side_far db ","
     side_very_far db "'"
+    door_very_close db "H"
+    door_close db "D"
+    door_mid db "|"
+    door_far db ";"
+    door_very_far db "."
 
     ceiling_char db " "
     floor_char db "."
@@ -83,11 +87,12 @@ section .data
 
     show_minimap db 0
     ray_side db 0
+    ray_tile db 0
 
     map:
         db "################"
         db "#      #       #"
-        db "# #### # ##### #"
+        db "# ####D# ##### #"
         db "# #    #     # #"
         db "# # ####### #  #"
         db "# #         #  #"
@@ -237,6 +242,11 @@ handle_input:
     cmp al, 'M'
     je toggle_minimap
 
+    cmp al, 'e'
+    je interact_door
+    cmp al, 'E'
+    je interact_door
+
     ret
 
 rotate_left:
@@ -334,6 +344,9 @@ try_move_fp:
     add rsi, rcx
 
     cmp byte [rsi], '#'
+    je .blocked
+
+    cmp byte [rsi], 'D'
     je .blocked
 
     mov [rel player_x_fp], rax
@@ -558,7 +571,7 @@ cast_ray_for_column:
 
 .ray_loop:
     cmp rcx, MAX_RAY_STEPS
-    jge .hit_wall
+    jge .hit_normal_wall
 
     add r8, r10
     add r9, r11
@@ -591,13 +604,13 @@ cast_ray_for_column:
 .side_done:
 
     cmp rax, 0
-    jl .hit_wall
+    jl .hit_normal_wall
     cmp rax, MAP_WIDTH
-    jge .hit_wall
+    jge .hit_normal_wall
     cmp rbx, 0
-    jl .hit_wall
+    jl .hit_normal_wall
     cmp rbx, MAP_HEIGHT
-    jge .hit_wall
+    jge .hit_normal_wall
 
     mov rdx, rbx
     imul rdx, MAP_WIDTH
@@ -607,14 +620,24 @@ cast_ray_for_column:
     add rsi, rdx
 
     cmp byte [rsi], '#'
-    je .hit_wall
+    je .hit_normal_wall
+
+    cmp byte [rsi], 'D'
+    je .hit_door
+
     ; Current tile becomes previous tile for the next ray step.
     mov [rel prev_tile_x], rax
     mov [rel prev_tile_y], rbx
 
     jmp .ray_loop
 
-.hit_wall:
+.hit_normal_wall:
+    mov byte [rel ray_tile], '#'
+    mov rax, rcx
+    ret
+
+.hit_door:
+    mov byte [rel ray_tile], 'D'
     mov rax, rcx
     ret
 
@@ -637,13 +660,6 @@ normalize_angle:
 
 .done:
     ret
-
-; ----------------------------------------
-; get_wall_shade
-; rdi = ray distance
-; returns:
-; rsi = address of shade character
-; ----------------------------------------
 ; ----------------------------------------
 ; get_wall_shade
 ; rdi = ray distance
@@ -651,6 +667,9 @@ normalize_angle:
 ; rsi = address of shade character
 ; ----------------------------------------
 get_wall_shade:
+    mov al, [rel ray_tile]
+    cmp al, 'D'
+    je .door_wall
     mov al, [rel ray_side]
     cmp al, 1
     je .side_wall
@@ -718,6 +737,37 @@ get_wall_shade:
 
 .side_far:
     lea rsi, [rel side_far]
+    ret
+.door_wall:
+    cmp rdi, 8
+    jle .door_very_close
+
+    cmp rdi, 16
+    jle .door_close
+
+    cmp rdi, 32
+    jle .door_mid
+
+    cmp rdi, 48
+    jle .door_far
+
+    lea rsi, [rel door_very_far]
+    ret
+
+.door_very_close:
+    lea rsi, [rel door_very_close]
+    ret
+
+.door_close:
+    lea rsi, [rel door_close]
+    ret
+
+.door_mid:
+    lea rsi, [rel door_mid]
+    ret
+
+.door_far:
+    lea rsi, [rel door_far]
     ret
 
 ; ----------------------------------------
@@ -807,6 +857,54 @@ render_minimap_if_enabled:
     call render_map
 
 .skip:
+    ret
+
+; ----------------------------------------
+; interact_door
+; Opens a door directly in front of player.
+; D becomes empty space.
+; ----------------------------------------
+interact_door:
+    ; Get player direction vector.
+    mov rcx, [rel player_angle]
+    call get_direction_vector
+    ; returns r10 = dx, r11 = dy
+
+    ; target position = player position + one tile forward
+    mov rax, [rel player_x_fp]
+    add rax, r10
+    sar rax, FP_SHIFT        ; target tile x
+
+    mov rbx, [rel player_y_fp]
+    add rbx, r11
+    sar rbx, FP_SHIFT        ; target tile y
+
+    ; bounds check
+    cmp rax, 0
+    jl .done
+    cmp rax, MAP_WIDTH
+    jge .done
+
+    cmp rbx, 0
+    jl .done
+    cmp rbx, MAP_HEIGHT
+    jge .done
+
+    ; index = y * MAP_WIDTH + x
+    mov rcx, rbx
+    imul rcx, MAP_WIDTH
+    add rcx, rax
+
+    lea rsi, [rel map]
+    add rsi, rcx
+
+    ; If tile is D, open it.
+    cmp byte [rsi], 'D'
+    jne .done
+
+    mov byte [rsi], ' '
+
+.done:
     ret
 
 exit_program:
