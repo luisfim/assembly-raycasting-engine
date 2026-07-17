@@ -6,8 +6,8 @@ This project was created as a low-level programming experiment to explore how ea
 
 ## Demo
 
-<p align="center">
-  <img src="assets/demo.png" width="700">
+<p align="left">
+  <img src="assets/demo.png" width="650">
 </p>
 
 ## Features
